@@ -18,8 +18,8 @@
 ## along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-lisp.py -- this is the reference for fully trampolined lisp with FFI and
-quasiquote. it builds on lisp03/lisp.py
+lisp.py -- this is lisp04-trampolined-fancy/lisp.py where all data
+structures are based on atoms and pairs. it is s.l.o.w.
 """
 
 ## pylint: disable=invalid-name,too-many-lines,unbalanced-tuple-unpacking
@@ -127,55 +127,45 @@ def symcheck(x):
 ## {{{ pair
 
 
-class Pair:
-    ## pylint: disable=too-few-public-methods
-
-    __slots__ = ["x", "y"]
-
-    def __init__(self, x, y):
-        self.x = x
-        self.y = y
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.x}, {self.y})"
+def is_pair(x):
+    return isinstance(x, list)
 
 
 def paircheck(x):
-    if not isinstance(x, Pair):
-        raise TypeError(f"expected pair, got {x!r}")
-    return x
+    if isinstance(x, list):
+        return x
+    raise TypeError(f"expected pair, got {x!r}")
 
 
 def cons(x, y):
-    return Pair(x, y)
+    return [x, y]
 
 
 def car(x):
-    return paircheck(x).x
+    return x[0]
+    return paircheck(x)[0]
 
 
 def cdr(x):
-    if x is not EL:
-        return paircheck(x).y
-    return EL
+    return EL if x is EL else x[1]
 
 
 def set_car(x, y):
-    paircheck(x).x = y
+    x[0] = y
     return EL
 
 
 def set_cdr(x, y):
-    paircheck(x).y = y
+    x[1] = y
     return EL
 
 
 def splitcar(x):
-    return paircheck(x).x, x.y
+    return x
 
 
 ## }}}
-## {{{ keyed tables of various sorts
+## {{{ keyed table
 
 
 class Table:
@@ -222,6 +212,13 @@ class Table:
         else:
             set_cdr(node, value)
 
+    def setbang(self, key, value):
+        node = self.find(key)
+        if node is SENTINEL:
+            return False
+        set_cdr(node, value)
+        return True
+
     def setdefault(self, key, value):
         node = self.find(key)
         if node is SENTINEL:
@@ -232,34 +229,55 @@ class Table:
         return cdr(node)
 
 
+## }}}
+## {{{ string-keyed table
+
+
 class StringKeyedTable(Table):
     def __init__(self):
         super().__init__(self.string_compare)
 
-    def string_compare(self, x, y):
+    @staticmethod
+    def string_compare(x, y):
         return (
-            type(x) is str
+            type(x) is str  ## pylint: disable=unidiomatic-typecheck
             and x
-            and type(y) is str
+            and type(y) is str  ## pylint: disable=unidiomatic-typecheck
             and x == y
         )
 
     def find(self, key):
-        if not (type(key) is str and key):  ## pylint: disable=unidiomatic-typecheck
+        if not (
+            type(key) is str and key  ## pylint: disable=unidiomatic-typecheck
+        ):
             raise TypeError(f"expected string, got {key!r}")
         return super().find(key)
+
+
+    def setdefault_func(self, key, func):
+        node = self.find(key)
+        if node is SENTINEL:
+            value = func(key)
+            node = cons(key, value)
+            link = cons(node, car(self.t))
+            set_car(self.t, link)
+            return value
+        return cdr(node)
+
+## }}}
+## {{{ symbol-keyed table
 
 
 class SymbolKeyedTable(Table):
     def __init__(self):
         super().__init__(self.symbol_compare)
 
-    def symbol_compare(self, x, y):
+    @staticmethod
+    def symbol_compare(x, y):
         return isinstance(x, Symbol) and x is y
 
     def find(self, key):
         return super().find(symcheck(key))
-
 
 ## }}}
 ## {{{ global symbol table
@@ -274,7 +292,7 @@ class SymbolTable:
         self.t = StringKeyedTable()
 
     def symbol(self, s):
-        return self.t.setdefault(s, Symbol(s))
+        return self.t.setdefault_func(s, Symbol)
 
 
 symbol = SymbolTable().symbol
@@ -288,35 +306,40 @@ class Stack:
     __slots__ = ["s"]
 
     def __init__(self):
-        self.s = EL
+        self.s = cons(EL, EL)
 
     def __bool__(self):
-        return self.s is not EL
+        return car(self.s) is not EL
 
     def clear(self):
-        self.s = EL
+        self.s = cons(EL, EL)
 
     def push(self, thing):
-        self.s = cons(thing, self.s)
+        set_car(self.s, cons(thing, car(self.s)))
+
+    append = push
 
     def pop(self):
-        if self.s is EL:
+        s = car(self.s)
+        if s is EL:
             raise ValueError("stack is empty")
-        ret, self.s = splitcar(self.s)
+        ret, s = splitcar(s)
+        set_car(self.s, s)
         return ret
 
     def top(self):
-        if self.s is EL:
+        s = car(self.s)
+        if s is EL:
             raise ValueError("stack is empty")
-        return car(self.s)
+        return car(s)
 
     ## for continuations
 
     def get(self):
-        return self.s
+        return car(self.s)
 
     def set(self, value):
-        self.s = value
+        set_car(self.s, value)
 
 
 ## }}}
@@ -338,7 +361,7 @@ class Frame:
 
 
 ## }}}
-## {{{ frame stack and global stack
+## {{{ frame stack and global frame stack
 
 
 class FrameStack(Stack):
@@ -354,32 +377,35 @@ stack = FrameStack()
 
 
 class Queue:
-    __slots__ = ["h", "t"]
+    __slots__ = ["q"]
 
     def __init__(self):
-        self.h = self.t = EL
+        self.q = cons(EL, EL)
 
     def __bool__(self):
-        return self.h is not EL
+        return car(self.q) is not EL
 
     def head(self):
-        return self.h
+        return car(self.q)
 
     def enqueue(self, x):
         node = cons(x, EL)
-        if self.h is EL:
-            self.h = node
+        if car(self.q) is EL:
+            set_car(self.q, node)
         else:
-            set_cdr(self.t, node)
-        self.t = node
+            set_cdr(cdr(self.q), node)
+        set_cdr(self.q, node)
+
+    append = enqueue
 
     def dequeue(self):
-        node = self.h
+        node = car(self.q)
         if node is EL:
             raise ValueError("queue is empty")
-        h = self.h = cdr(node)
+        h = cdr(node)
+        set_car(self.q, h)
         if h is EL:
-            self.t = EL
+            set_cdr(self.q, EL)
         return car(node)
 
 
@@ -388,66 +414,58 @@ class Queue:
 
 
 class Environment:
-    __slots__ = ["p", "d"]
+    __slots__ = ["e"]
 
     def __init__(self, params, args, parent):
-        self.p = parent
-        self.d = {}
-        self.bind(params, args)
+        self.e = cons(SymbolKeyedTable(), parent)
+        self.bind(car(self.e), params, args)
 
-    def bind(self, params, args):
+    @staticmethod
+    def bind(d, params, args):
         pl, al = params, args
         variadic = False
         while params is not EL:
             p, params = splitcar(params)
-            if not isinstance(p, Symbol):
-                raise TypeError(
-                    f"expected symbol, got {p!r} at {pl!r} <= {al!r}"
-                )
             if eq(p, symbol("&")):
                 variadic = True
             elif variadic:
                 if params is not EL:
                     raise SyntaxError(f"extra junk {params!r} after '&'")
-                self.d[p] = args
+                d.set(p, args)
                 return
             elif args is EL:
                 raise TypeError(f"not enough args at {pl!r} <= {al!r}")
             else:
                 a, args = splitcar(args)
-                self.d[p] = a
+                d.set(p, a)
         if variadic:
             raise SyntaxError(f"'&' ends param list {pl!r} <= {al!r}")
         if args is not EL:
             raise TypeError(f"too many args at {pl!r} <= {al!r}")
 
     def get(self, sym, default):
-        if not isinstance(sym, Symbol):
-            raise TypeError(f"expected symbol, got {sym!r}")
         e = self
         while e is not SENTINEL:
-            x = e.d.get(sym, SENTINEL)
+            x = car(e.e).get(sym, SENTINEL)
             if x is not SENTINEL:
                 return x
-            e = e.p
+            e = cdr(e.e)
         return default
 
     def set(self, sym, value):
-        if not isinstance(sym, Symbol):
-            raise TypeError(f"expected symbol, got {sym!r}")
-        self.d[sym] = value
+        car(self.e).set(sym, value)
         return EL
 
     def setbang(self, sym, value):
-        if not isinstance(sym, Symbol):
-            raise TypeError(f"expected symbol, got {sym!r}")
         e = self
         while e is not SENTINEL:
-            if sym in e.d:
-                e.d[sym] = value
+            if car(e.e).setbang(sym, value):
                 return EL
-            e = e.p
+            e = cdr(e.e)
         raise NameError(str(sym))
+
+    def up(self):  ## for op_eval()
+        return cdr(self.e)
 
 
 genv = Environment(EL, EL, SENTINEL)
@@ -473,28 +491,10 @@ class Scanner:
 
     def __init__(self, callback):
         self.pos = 0
-        self.token = []
-        self.lut = {
-            "(": self.c_lpar,
-            ")": self.c_rpar,
-            " ": self.c_ws,
-            "\n": self.c_ws,
-            "\r": self.c_ws,
-            "\t": self.c_ws,
-            "[": self.c_lbrack,
-            "]": self.c_rbrack,
-            ";": self.c_semi,
-            "'": self.c_tick,
-            '"': self.c_quote,
-            ",": self.c_comma,
-            "`": self.c_backtick,
-        }
-        self.parens = []
+        self.token = Queue()
+        self.parens = Stack()
         self.cont = self.k_sym
         self.callback = callback
-        ## XXX ascii-specific
-        for i in range(256):
-            self.lut.setdefault(chr(i), self.token.append)
 
     def feed(self, text):
         if text is None:
@@ -515,8 +515,9 @@ class Scanner:
     def push(self, ttype):
         l = self.token
         if l:
-            t = "".join(l)
-            l.clear()
+            t = ""
+            while l:
+                t += l.dequeue()
         elif ttype == self.T_SYM:
             return
         else:
@@ -535,7 +536,27 @@ class Scanner:
         self.callback(ttype, t)
 
     def k_sym(self, ch):
-        return self.lut[ch](ch)
+        ## pylint: disable=too-many-return-statements
+        if ch == "(":
+            return self.c_lpar(ch)
+        if ch == ")":
+            return self.c_rpar(ch)
+        if ch in " \n\r\t":
+            return self.c_ws(ch)
+        if ch == "[":
+            return self.c_lbrack(ch)
+        if ch == "]":
+            return self.c_rbrack(ch)
+        if ch == ";":
+            return self.c_semi(ch)
+        if ch == "'":
+            return self.c_tick(ch)
+        if ch == ",":
+            return self.c_comma(ch)
+        if ch == "`":
+            return self.c_backtick(ch)
+        self.token.append(ch)
+        return self.k_sym
 
     def k_comment(self, ch):
         return self.k_sym if ch in "\n\r" else self.k_comment
@@ -543,7 +564,7 @@ class Scanner:
     def k_quote(self, ch):
         if ch == "\\":
             return self.k_backslash
-        if ch == "\"":
+        if ch == '"':
             self.push(self.T_STRING)
             return self.k_sym
         self.token.append(ch)
@@ -651,23 +672,10 @@ class Parser:
 
     def __init__(self, callback):
         self.callback = callback
-        self.stack = []
-        self.qstack = []
+        self.stack = Stack()
+        self.qstack = Stack()
         self.scanner = Scanner(self.process_token)
         self.feed = self.scanner.feed
-        self.lut = {
-            self.scanner.T_SYM: self.t_sym,
-            self.scanner.T_INT: self.add,
-            self.scanner.T_FLOAT: self.add,
-            self.scanner.T_STRING: self.add,
-            self.scanner.T_TICK: self.set_up_quote,
-            self.scanner.T_BACKTICK: self.set_up_quote,
-            self.scanner.T_COMMA: self.set_up_quote,
-            self.scanner.T_COMMA_AT: self.set_up_quote,
-            self.scanner.T_LPAR: self.t_lpar,
-            self.scanner.T_RPAR: self.t_rpar,
-            self.scanner.T_EOF: self.t_eof,
-        }
 
     def t_sym(self, token):
         self.add(symbol(token))
@@ -691,16 +699,28 @@ class Parser:
             raise SyntaxError("unclosed quasiquote")
 
     def process_token(self, ttype, token):
-        self.lut[ttype](token)
+        s = self.scanner
+        if ttype == s.T_SYM:
+            self.t_sym(token)
+        elif ttype == s.T_LPAR:
+            self.t_lpar(token)
+        elif ttype == s.T_RPAR:
+            self.t_rpar(token)
+        elif ttype in (s.T_INT, s.T_FLOAT, s.T_STRING):
+            self.add(token)
+        elif ttype in (s.T_TICK, s.T_COMMA, s.T_COMMA_AT, s.T_BACKTICK):
+            self.set_up_quote(token)
+        else:
+            self.t_eof(token)
 
     def add(self, x):
         if not self.stack:
             raise SyntaxError(f"expected '(' got {x!r}")
-        self.stack[-1].enqueue(self.quote_wrap(x))
+        self.stack.top().enqueue(self.quote_wrap(x))
 
     def quote_wrap(self, x):
         ret = x
-        while self.qstack and isinstance(self.qstack[-1], Symbol):
+        while self.qstack and isinstance(self.qstack.top(), Symbol):
             s = self.qstack.pop()
             ret = cons(s, cons(ret, EL))
         return ret
@@ -810,19 +830,17 @@ def main(force_repl=False):
 
 
 class Lambda:
-    __slots__ = ["p", "b", "e", "special"]
+    __slots__ = ["l", "special"]
 
     def __init__(self, params, body, env):
-        self.p = params
-        self.b = body
-        self.e = env
+        self.l = cons(params, cons(body, env))
         self.special = False
 
     def __call__(self, frame):
         args = frame.x
-        p = frame.e if self.special else self.e
-        e = Environment(self.p, args, p)
-        return bounce(leval_, Frame(frame, x=self.b, e=e))
+        p = frame.e if self.special else cdr(cdr(self.l))
+        e = Environment(car(self.l), args, p)
+        return bounce(leval_, Frame(frame, x=car(cdr(self.l)), e=e))
 
     ###
 
@@ -841,10 +859,10 @@ class Lambda:
         )
 
     def stringify_(self, frame):
-        stack.push(frame, x=self.b)
+        stack.push(frame, x=car(cdr(self.l)))
         return bounce(
             stringify_,
-            Frame(frame, x=self.p, c=self.lambda_params_done),
+            Frame(frame, x=car(self.l), c=self.lambda_params_done),
         )
 
 
@@ -855,16 +873,15 @@ class Lambda:
 class Continuation:
     ## pylint: disable=too-few-public-methods
 
-    __slots__ = ["continuation", "stack"]
+    __slots__ = ["c"]
 
     def __init__(self, continuation):
-        self.continuation = continuation  ## a python func
-        self.stack = stack.get()
+        self.c = cons(continuation, stack.get())
 
     def __call__(self, frame):
         (x,) = unpack(frame.x, 1)
-        stack.set(self.stack)
-        return bounce(self.continuation, x)  ## that's it.
+        stack.set(cdr(self.c))
+        return bounce(car(self.c), x)  ## that's it.
 
 
 ## }}}
@@ -877,7 +894,7 @@ def stringify(sexpr, env=SENTINEL):
 
 
 def stringify_setup(frame, args):
-    if isinstance(args, Pair):
+    if is_pair(args):
         arg, args = splitcar(args)
     else:
         arg, args = args, EL
@@ -920,7 +937,7 @@ def stringify_(frame):
         return bounce(frame.c, "[continuation]")
     if callable(x):
         return bounce(frame.c, "[primitive]")
-    if not isinstance(x, Pair):
+    if not is_pair(x):
         return bounce(frame.c, "[opaque]")
 
     stack.push(frame, x=SENTINEL)
@@ -938,7 +955,7 @@ def leval(sexpr, env=SENTINEL):
 
 
 def eval_setup(frame, args):
-    if isinstance(args, Pair):
+    if is_pair(args):
         arg, args = splitcar(args)
     else:
         arg, args = args, EL
@@ -999,7 +1016,7 @@ def leval_(frame):
         if obj is SENTINEL:
             raise NameError(x)
         return bounce(frame.c, obj)
-    if isinstance(x, Pair):
+    if is_pair(x):
         sym, args = splitcar(x)
     elif isinstance(x, Lambda):
         sym, args = x, EL
@@ -1013,7 +1030,7 @@ def leval_(frame):
         ## primitive Lambda Continuation
         stack.push(frame, x=args)
         return bounce(eval_proc_done, sym)
-    elif not isinstance(sym, Pair):
+    elif not is_pair(sym):
         raise TypeError(f"expected proc or list, got {sym!r}")
 
     stack.push(frame, x=args)
@@ -1072,7 +1089,7 @@ def lisp_value_to_py_value_(frame):
         x = None
     elif x is T:
         x = True
-    if not isinstance(x, Pair):
+    if not is_pair(x):
         return bounce(frame.c, x)
 
     stack.push(frame, x=SENTINEL)
@@ -1236,10 +1253,7 @@ def op_define_cont(value):
 def op_define(frame):
     sym, defn = unpack(frame.x, 2)
 
-    if not isinstance(sym, Symbol):
-        raise TypeError(f"expected symbol, got {sym!r}")
-
-    stack.push(frame, x=sym)
+    stack.push(frame, x=symcheck(sym))
     return bounce(leval_, Frame(frame, x=defn, c=op_define_cont))
 
 
@@ -1267,7 +1281,7 @@ def op_if(frame):
 def op_lambda(frame):
     params, body = unpack(frame.x, 2)
 
-    if not (isinstance(params, Pair) or params is EL):
+    if not (is_pair(params) or params is EL):
         raise TypeError("expected param list, got {params!r}")
 
     return bounce(frame.c, Lambda(params, body, frame.e))
@@ -1292,9 +1306,7 @@ def op_setbang_cont(defn):
 @spcl("set!")
 def op_setbang(frame):
     sym, defn = unpack(frame.x, 2)
-    if not isinstance(sym, Symbol):
-        raise TypeError(f"expected symbol, got {sym!r}")
-    stack.push(frame, x=sym)
+    stack.push(frame, x=symcheck(sym))
     return bounce(leval_, Frame(frame, x=defn, c=op_setbang_cont))
 
 
@@ -1315,10 +1327,7 @@ def op_special_cont(value):
 def op_special(frame):
     sym, defn = unpack(frame.x, 2)
 
-    if not isinstance(sym, Symbol):
-        raise TypeError(f"expected symbol, got {sym!r}")
-
-    stack.push(frame, x=sym)
+    stack.push(frame, x=symcheck(sym))
     return bounce(leval_, Frame(frame, x=defn, c=op_special_cont))
 
 
@@ -1348,7 +1357,7 @@ def op_trap(frame):
 
 def qq_list_setup(frame, form):
     elt, form = splitcar(form)
-    if not (isinstance(form, Pair) or form is EL):
+    if not (is_pair(form) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
     stack.push(frame, x=form)
     return bounce(qq_list_next, Frame(frame, x=elt, c=qq_list_cont))
@@ -1386,8 +1395,6 @@ def qq_spliced(value):
         return qq_list_setup(frame, form)
 
     while value is not EL:
-        if not isinstance(value, Pair):
-            raise TypeError(f"expected list, got {value!r}")
         elt, value = splitcar(value)
         if value is EL:
             stack.push(frame, x=form)
@@ -1400,7 +1407,7 @@ def qq_spliced(value):
 def qq_list_next(frame):
     elt = frame.x
 
-    if isinstance(elt, Pair) and eq(car(elt), symbol("unquote-splicing")):
+    if is_pair(elt) and eq(car(elt), symbol("unquote-splicing")):
         _, x = unpack(elt, 2)
         return bounce(leval_, Frame(frame, x=x, c=qq_spliced))
     return bounce(qq, Frame(frame, x=elt, c=qq_list_cont))
@@ -1429,7 +1436,7 @@ def qq_list(frame):
 
 def qq(frame):
     form = frame.x
-    if isinstance(form, Pair):
+    if is_pair(form):
         return bounce(qq_list, frame)
     return bounce(frame.c, form)
 
@@ -1557,7 +1564,7 @@ def op_eval(frame):
     for _ in range(n_up):
         if e is SENTINEL:
             raise ValueError(f"cannot go up {n_up} levels")
-        e = e.p
+        e = e.up()
     return bounce(leval_, Frame(frame, x=x, e=e))
 
 
@@ -1695,7 +1702,7 @@ def op_type(frame):
             return symbol("()")
         if x is T:
             return symbol("#t")
-        if isinstance(x, Pair):
+        if is_pair(x):
             return symbol("pair")
         if isinstance(x, Symbol):
             return symbol("symbol")
@@ -1745,9 +1752,7 @@ def op_while(frame):
 def module_ffi(args, module):
     if not args:
         raise TypeError("at least one arg required")
-    sym = args.pop(0)
-    if not isinstance(sym, Symbol):
-        raise TypeError(f"expected symbol, got {sym!r}")
+    sym = symcheck(args.pop(0))
     func = getattr(module, str(sym), SENTINEL)
     if func is SENTINEL:
         raise ValueError(f"function {sym!r} does not exist")
