@@ -31,6 +31,9 @@ import sys
 import traceback
 
 
+TURBO = False
+
+
 ## {{{ trampoline
 
 
@@ -131,19 +134,12 @@ def is_pair(x):
     return isinstance(x, list)
 
 
-def paircheck(x):
-    if isinstance(x, list):
-        return x
-    raise TypeError(f"expected pair, got {x!r}")
-
-
 def cons(x, y):
     return [x, y]
 
 
 def car(x):
     return x[0]
-    return paircheck(x)[0]
 
 
 def cdr(x):
@@ -196,12 +192,11 @@ class Table:
 
     def clear(self):
         set_car(self.t, EL)
+        return EL
 
     def get(self, key, default):
         node = self.find(key)
-        if node is SENTINEL:
-            return default
-        return cdr(node)
+        return default if node is SENTINEL else cdr(node)
 
     def set(self, key, value):
         node = self.find(key)
@@ -211,6 +206,7 @@ class Table:
             set_car(self.t, link)
         else:
             set_cdr(node, value)
+        return EL
 
     def setbang(self, key, value):
         node = self.find(key)
@@ -227,6 +223,39 @@ class Table:
             set_car(self.t, link)
             return value
         return cdr(node)
+
+    def setdefault_func(self, key, func):
+        node = self.find(key)
+        if node is SENTINEL:
+            value = func(key)
+            node = cons(key, value)
+            link = cons(node, car(self.t))
+            set_car(self.t, link)
+            return value
+        return cdr(node)
+
+
+if TURBO:
+
+    class Table(dict):  ## pylint: disable=function-redefined
+        def __init__(self, _):
+            super().__init__()
+
+        def set(self, key, value):
+            self[key] = value
+
+        def setbang(self, key, value):
+            if key in self:
+                self[key] = value
+                return True
+            return False
+
+        def setdefault_func(self, key, func):
+            value = self.setdefault(key, SENTINEL)
+            if value is SENTINEL:
+                value = func(key)
+                self[key] = value
+            return value
 
 
 ## }}}
@@ -253,17 +282,6 @@ class StringKeyedTable(Table):
             raise TypeError(f"expected string, got {key!r}")
         return super().find(key)
 
-
-    def setdefault_func(self, key, func):
-        node = self.find(key)
-        if node is SENTINEL:
-            value = func(key)
-            node = cons(key, value)
-            link = cons(node, car(self.t))
-            set_car(self.t, link)
-            return value
-        return cdr(node)
-
 ## }}}
 ## {{{ symbol-keyed table
 
@@ -278,6 +296,7 @@ class SymbolKeyedTable(Table):
 
     def find(self, key):
         return super().find(symcheck(key))
+
 
 ## }}}
 ## {{{ global symbol table
@@ -977,7 +996,10 @@ def eval_next_arg(value):
             ret = cons(f.x, ret)
         ## at this point, need to see if proc is ffi
         if getattr(proc, "ffi", False):
-            ## XXX construct args as a list not pair
+            ## should construct args as a pylist not pair but then Frame would
+            ## need a new field to hold proc all the way through. this is about
+            ## a global 5% performance hit. i care more about ffi capability
+            ## than performance. plus, this thing is slow enough already.
             return bounce(do_ffi, Frame(frame, x=cons(ret, proc)))
         return bounce(proc, Frame(frame, x=ret))
 
