@@ -18,8 +18,9 @@
 ## along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-lisp.py -- this is lisp04-trampolined-fancy/lisp.py where all data
+fast.py -- this is lisp04-trampolined-fancy/lisp.py where all data
 structures are based on pairs. it is s.l.o.w. unless TURBO > 0.
+all internal pair ops have been inlined for speed.
 """
 
 
@@ -47,7 +48,9 @@ __all__ = (
     "eq",
     "error",
     "execute",
+    "ffi",
     "genv",
+    "glbl",
     "is_atom",
     "is_pair",
     "leval",
@@ -55,6 +58,7 @@ __all__ = (
     "parse",
     "set_car",
     "set_cdr",
+    "spcl",
     "splitcar",
     "stack",
     "symbol",
@@ -65,8 +69,7 @@ __all__ = (
 
 
 TURBO = 0  ## as-is
-#TURBO = 1  ## break pair encapsulation at hotspots
-#TURBO = 2  ## use python dict for keyed tables
+TURBO = 1  ## use python dict for keyed tables
 
 
 ## {{{ trampoline
@@ -203,94 +206,73 @@ class Table:
     __slots__ = ["t"]
 
     def __init__(self, compare):
-        self.t = cons(EL, compare)
+        self.t = [EL, compare]
 
     def __bool__(self):
-        return car(self.t) is not EL
+        return self.t[0] is not EL
 
-    if TURBO > 0:
-
-        def find(self, key):
-            link, cmp = self.t
-            prev = SENTINEL
-            while link is not EL:
-                node = link[0]
-                if cmp(key, node[0]):
-                    if prev is not SENTINEL:
-                        ## pylint: disable=unsupported-assignment-operation
-                        prev[1] = link[1]
-                        link[1] = self.t[0]
-                        self.t[0] = link
-                    return node
-                prev = link
-                link = link[1]
-            return SENTINEL
-
-    else:
-
-        def find(self, key):
-            compare = cdr(self.t)
-            prev = SENTINEL
-            link = car(self.t)
-            while link is not EL:
-                node = car(link)
-                if compare(key, car(node)):
-                    if prev is not SENTINEL:
-                        ## move to first position
-                        set_cdr(prev, cdr(link))
-                        set_cdr(link, car(self.t))
-                        set_car(self.t, link)
-                    return node
-                prev = link
-                link = cdr(link)
-            return SENTINEL
+    def find(self, key):
+        ## pylint: disable=unsupported-assignment-operation
+        ## pylint: disable=unsubscriptable-object
+        link, cmp = self.t
+        prev = SENTINEL
+        while link is not EL:
+            node = link[0]
+            if cmp(key, node[0]):
+                if prev is not SENTINEL:
+                    prev[1] = link[1]
+                    link[1] = self.t[0]
+                    self.t[0] = link
+                return node
+            prev = link
+            link = link[1]
+        return SENTINEL
 
     def clear(self):
-        set_car(self.t, EL)
-        return EL
+        self.t[0] = EL
 
     def get(self, key, default):
         node = self.find(key)
-        return default if node is SENTINEL else cdr(node)
+        return default if node is SENTINEL else node[1]
 
     def set(self, key, value):
         node = self.find(key)
         if node is SENTINEL:
-            node = cons(key, value)
-            link = cons(node, car(self.t))
-            set_car(self.t, link)
+            node = [key, value]
+            link = [node, self.t[0]]
+            self.t[0] = link
         else:
-            set_cdr(node, value)
+            node[1] = value
         return EL
 
     def setbang(self, key, value):
         node = self.find(key)
         if node is SENTINEL:
             return False
-        set_cdr(node, value)
+        node[1] = value
         return True
 
     def setdefault(self, key, value):
         node = self.find(key)
         if node is SENTINEL:
-            node = cons(key, value)
-            link = cons(node, car(self.t))
-            set_car(self.t, link)
+            node = [key, value]
+            link = [node, self.t[0]]
+            self.t[0] = link
             return value
-        return cdr(node)
+        return node[1]
 
     def setdefault_func(self, key, func):
         node = self.find(key)
         if node is SENTINEL:
             value = func(key)
-            node = cons(key, value)
-            link = cons(node, car(self.t))
-            set_car(self.t, link)
+            node = [key, value]
+            link = [node, self.t[0]]
+            self.t[0] = link
             return value
-        return cdr(node)
+        return node[1]
 
 
-if TURBO > 1:
+if TURBO > 0:
 
     class Table(dict):  ## pylint: disable=function-redefined
         def __init__(self, _):
@@ -323,12 +305,7 @@ class StringKeyedTable(Table):
 
     @staticmethod
     def string_compare(x, y):
-        return (
-            type(x) is str  ## pylint: disable=unidiomatic-typecheck
-            and x
-            and type(y) is str  ## pylint: disable=unidiomatic-typecheck
-            and x == y
-        )
+        return x == y
 
     def find(self, key):
         if not (
@@ -381,60 +358,35 @@ class Stack:
     __slots__ = ["s"]
 
     def __init__(self):
-        self.s = cons(EL, EL)
+        self.s = [EL, EL]
 
     def __bool__(self):
-        return car(self.s) is not EL
+        return self.s[0] is not EL
 
     def clear(self):
-        self.s = cons(EL, EL)
+        self.s = [EL, EL]
 
-    if TURBO > 0:
-
-        def push(self, thing):
-            self.s[0] = [thing, self.s[0]]
-
-    else:
-
-        def push(self, thing):
-            set_car(self.s, cons(thing, car(self.s)))
+    def push(self, thing):
+        self.s[0] = [thing, self.s[0]]
 
     append = push
 
-    if TURBO > 0:
-
-        def pop(self):
-            s = self.s[0]
-            if s is EL:
-                raise ValueError("stack is empty")
-            ret = s[0]
-            s = s[1]
-            self.s[0] = s
-            return ret
-
-    else:
-
-        def pop(self):
-            s = car(self.s)
-            if s is EL:
-                raise ValueError("stack is empty")
-            ret, s = splitcar(s)
-            set_car(self.s, s)
-            return ret
+    def pop(self):
+        ## pylint: disable=unpacking-non-sequence
+        ret, self.s[0] = self.s[0]
+        return ret
 
     def top(self):
-        s = car(self.s)
-        if s is EL:
-            raise ValueError("stack is empty")
-        return car(s)
+        ## pylint: disable=unsubscriptable-object
+        return self.s[0][0]
 
     ## for continuations
 
     def get(self):
-        return car(self.s)
+        return self.s[0]
 
     def set(self, value):
-        set_car(self.s, value)
+        self.s[0] = value
 
 
 ## }}}
@@ -460,8 +412,9 @@ class Frame:
 
 
 class FrameStack(Stack):
-    def push(self, thing, **kw):
-        Stack.push(self, Frame(thing, **kw))
+    def push(self, thing, x=None, c=None, e=None):
+        ## pylint: disable=arguments-differ
+        Stack.push(self, Frame(thing, x, c, e))
 
 
 stack = FrameStack()
@@ -475,33 +428,35 @@ class Queue:
     __slots__ = ["q"]
 
     def __init__(self):
-        self.q = cons(EL, EL)
+        self.q = [EL, EL]
 
     def __bool__(self):
-        return car(self.q) is not EL
+        return self.q[0] is not EL
 
     def head(self):
-        return car(self.q)
+        return self.q[0]
 
     def enqueue(self, x):
-        node = cons(x, EL)
-        if car(self.q) is EL:
-            set_car(self.q, node)
+        ## pylint: disable=unsupported-assignment-operation
+        node = [x, EL]
+        if self.q[0] is EL:
+            self.q[0] = node
         else:
-            set_cdr(cdr(self.q), node)
-        set_cdr(self.q, node)
+            self.q[1][1] = node
+        self.q[1] = node
 
     append = enqueue
 
     def dequeue(self):
-        node = car(self.q)
+        ## pylint: disable=unsubscriptable-object
+        node = self.q[0]
         if node is EL:
             raise ValueError("queue is empty")
-        h = cdr(node)
-        set_car(self.q, h)
+        h = node[1]
+        self.q[0] = h
         if h is EL:
-            set_cdr(self.q, EL)
-        return car(node)
+            self.q[1] = EL
+        return node[0]
 
 
 ## }}}
@@ -512,15 +467,15 @@ class Environment:
     __slots__ = ["e"]
 
     def __init__(self, params, args, parent):
-        self.e = cons(SymbolKeyedTable(), parent)
-        self.bind(car(self.e), params, args)
+        self.e = [SymbolKeyedTable(), parent]
+        self.bind(self.e[0], params, args)
 
     @staticmethod
     def bind(d, params, args):
         pl, al = params, args
         variadic = False
         while params is not EL:
-            p, params = splitcar(params)
+            p, params = params
             if eq(p, symbol("&")):
                 variadic = True
             elif variadic:
@@ -531,49 +486,36 @@ class Environment:
             elif args is EL:
                 raise TypeError(f"not enough args at {pl!r} <= {al!r}")
             else:
-                a, args = splitcar(args)
+                a, args = args
                 d.set(p, a)
         if variadic:
             raise SyntaxError(f"'&' ends param list {pl!r} <= {al!r}")
         if args is not EL:
             raise TypeError(f"too many args at {pl!r} <= {al!r}")
 
-    if TURBO > 0:
-
-        def get(self, sym, default):
-            e = self
-            while e is not SENTINEL:
-                x = e.e[0].get(sym, SENTINEL)
-                if x is not SENTINEL:
-                    return x
-                e = e.e[1]
-            return default
-
-    else:
-
-        def get(self, sym, default):
-            e = self
-            while e is not SENTINEL:
-                x = car(e.e).get(sym, SENTINEL)
-                if x is not SENTINEL:
-                    return x
-                e = cdr(e.e)
-            return default
+    def get(self, sym, default):
+        e = self
+        while e is not SENTINEL:
+            x = e.e[0].get(sym, SENTINEL)
+            if x is not SENTINEL:
+                return x
+            e = e.e[1]
+        return default
 
     def set(self, sym, value):
-        car(self.e).set(sym, value)
+        self.e[0].set(sym, value)
         return EL
 
     def setbang(self, sym, value):
         e = self
         while e is not SENTINEL:
-            if car(e.e).setbang(sym, value):
+            if e.e[0].setbang(sym, value):
                 return EL
-            e = cdr(e.e)
+            e = e.e[1]
         raise NameError(str(sym))
 
     def up(self):  ## for op_eval()
-        return cdr(self.e)
+        return self.e[1]
 
 
 genv = Environment(EL, EL, SENTINEL)
@@ -941,14 +883,14 @@ class Lambda:
     __slots__ = ["l", "special"]
 
     def __init__(self, params, body, env):
-        self.l = cons(params, cons(body, env))
+        self.l = [params, [body, env]]
         self.special = False
 
     def __call__(self, frame):
         args = frame.x
-        p = frame.e if self.special else cdr(cdr(self.l))
-        e = Environment(car(self.l), args, p)
-        return bounce(leval_, Frame(frame, x=car(cdr(self.l)), e=e))
+        p = frame.e if self.special else self.l[1][1]
+        e = Environment(self.l[0], args, p)
+        return bounce(leval_, Frame(frame, x=self.l[1][0], e=e))
 
     ###
 
@@ -967,10 +909,10 @@ class Lambda:
         )
 
     def stringify_(self, frame):
-        stack.push(frame, x=car(cdr(self.l)))
+        stack.push(frame, x=self.l[1][0])
         return bounce(
             stringify_,
-            Frame(frame, x=car(self.l), c=self.lambda_params_done),
+            Frame(frame, x=self.l[0], c=self.lambda_params_done),
         )
 
 
@@ -984,12 +926,12 @@ class Continuation:
     __slots__ = ["c"]
 
     def __init__(self, continuation):
-        self.c = cons(continuation, stack.get())
+        self.c = [continuation, stack.get()]
 
     def __call__(self, frame):
         (x,) = unpack(frame.x, 1)
-        stack.set(cdr(self.c))
-        return bounce(car(self.c), x)  ## that's it.
+        stack.set(self.c[1])
+        return bounce(self.c[0], x)  ## that's it.
 
 
 ## }}}
@@ -1002,10 +944,11 @@ def stringify(sexpr, env=SENTINEL):
 
 
 def stringify_setup(frame, args):
-    if is_pair(args):
-        arg, args = splitcar(args)
+    if isinstance(args, list):
+        arg, args = args
     else:
-        arg, args = args, EL
+        arg = args
+        args = EL
         stack.push(Frame(frame, x="."))
     stack.push(frame, x=args)
     return bounce(stringify_, Frame(frame, x=arg, c=stringify_cont))
@@ -1045,7 +988,7 @@ def stringify_(frame):
         return bounce(frame.c, "[continuation]")
     if callable(x):
         return bounce(frame.c, "[primitive]")
-    if not is_pair(x):
+    if not isinstance(x, list):
         return bounce(frame.c, "[opaque]")
 
     stack.push(frame, x=SENTINEL)
@@ -1062,27 +1005,14 @@ def leval(sexpr, env=SENTINEL):
     return trampoline(leval_, Frame(SENTINEL, x=sexpr, e=e, c=land))
 
 
-if TURBO > 0:
-
-    def eval_setup(frame, args):
-        if isinstance(args, list):
-            arg, args = args
-        else:
-            arg = args
-            args = EL
-        stack.push(frame, x=args)
-        return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
-
-else:
-
-    def eval_setup(frame, args):
-        if is_pair(args):
-            arg, args = splitcar(args)
-        else:
-            arg = args
-            args = EL
-        stack.push(frame, x=args)
-        return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
+def eval_setup(frame, args):
+    if isinstance(args, list):
+        arg, args = args
+    else:
+        arg = args
+        args = EL
+    stack.push(frame, x=args)
+    return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
 
 
 def eval_next_arg(value):
@@ -1090,20 +1020,20 @@ def eval_next_arg(value):
     args = frame.x
 
     if args is EL:
-        ret = cons(value, EL)
+        ret = [value, EL]
         while True:
             f = stack.pop()
             if f.x is SENTINEL:
                 proc = f.c  ## NB abuse of .c field
                 break
-            ret = cons(f.x, ret)
+            ret = [f.x, ret]
         ## at this point, need to see if proc is ffi
         if getattr(proc, "ffi", False):
             ## should construct args as a pylist not pair but then Frame would
             ## need a new field to hold proc all the way through. this is about
             ## a global 5% performance hit. i care more about ffi capability
             ## than performance. plus, this thing is slow enough already.
-            return bounce(do_ffi, Frame(frame, x=cons(ret, proc)))
+            return bounce(do_ffi, Frame(frame, x=[ret, proc]))
         return bounce(proc, Frame(frame, x=ret))
 
     stack.push(frame, x=value)
@@ -1141,8 +1071,8 @@ def leval_(frame):
         if obj is SENTINEL:
             raise NameError(x)
         return bounce(frame.c, obj)
-    if is_pair(x):
-        sym, args = splitcar(x)
+    if isinstance(x, list):
+        sym, args = x
     elif isinstance(x, Lambda):
         sym = x
         args = EL
@@ -1156,7 +1086,7 @@ def leval_(frame):
         ## primitive Lambda Continuation
         stack.push(frame, x=args)
         return bounce(eval_proc_done, sym)
-    elif not is_pair(sym):
+    elif not isinstance(sym, list):
         raise TypeError(f"expected proc or list, got {sym!r}")
 
     stack.push(frame, x=args)
@@ -1169,7 +1099,7 @@ def leval_(frame):
 
 def do_ffi(frame):
     af = frame.x
-    args, func = splitcar(af)
+    args, func = af
     stack.push(frame, x=func)
 
     if args is EL:
@@ -1185,7 +1115,7 @@ def lisp_value_to_py_value(x):
 
 
 def lv2pv_setup(frame, args):
-    arg, args = splitcar(args)
+    arg, args = args
     stack.push(frame, x=args)
     return bounce(
         lisp_value_to_py_value_, Frame(frame, x=arg, c=lv2pv_next_arg)
@@ -1215,7 +1145,7 @@ def lisp_value_to_py_value_(frame):
         x = None
     elif x is T:
         x = True
-    if not is_pair(x):
+    if not isinstance(x, list):
         return bounce(frame.c, x)
 
     stack.push(frame, x=SENTINEL)
@@ -1227,7 +1157,8 @@ def py_value_to_lisp_value(x):
 
 
 def pv2lv_setup(frame, args):
-    arg, args = args[0], args[1:]
+    arg = args[0]
+    del args[0]
     stack.push(frame, x=args)
     return bounce(
         py_value_to_lisp_value_, Frame(frame, x=arg, c=pv2lv_next_arg)
@@ -1239,12 +1170,12 @@ def pv2lv_next_arg(value):
     args = frame.x
 
     if not args:
-        ret = cons(value, EL)
+        ret = [value, EL]
         while True:
             f = stack.pop()
             if f.x is SENTINEL:
                 break
-            ret = cons(f.x, ret)
+            ret = [f.x, ret]
         return bounce(frame.c, ret)
 
     stack.push(frame, x=value)
@@ -1278,7 +1209,7 @@ def ffi_args_done(args):
 def lisp_list_to_py_list(lst):
     ret = []
     while lst is not EL:
-        x, lst = splitcar(lst)
+        x, lst = lst
         ret.append(x)
     return ret
 
@@ -1329,7 +1260,7 @@ def unpack(args, n):
     for _ in range(n):
         if args is EL:
             raise TypeError(f"not enough args, need {n}")
-        arg, args = splitcar(args)
+        arg, args = args
         ret.append(arg)
     if args is not EL:
         raise TypeError(f"too many args, need {n}")
@@ -1341,16 +1272,16 @@ def unpack(args, n):
 
 
 def op_cond_setup(frame, args):
-    head, args = splitcar(args)
+    head, args = args
     predicate, consequent = unpack(head, 2)
 
-    stack.push(frame, x=cons(args, consequent))
+    stack.push(frame, x=[args, consequent])
     return bounce(leval_, Frame(frame, c=op_cond_cont, x=predicate))
 
 
 def op_cond_cont(value):
     frame = stack.pop()
-    args, consequent = splitcar(frame.x)
+    args, consequent = frame.x
 
     if value is not EL:
         return bounce(leval_, Frame(frame, x=consequent))
@@ -1389,14 +1320,14 @@ def op_define(frame):
 def op_if_cont(value):
     frame = stack.pop()
     ca = frame.x
-    sexpr = cdr(ca) if value is EL else car(ca)
+    sexpr = ca[1] if value is EL else ca[0]
     return bounce(leval_, Frame(frame, x=sexpr))
 
 
 @spcl("if")
 def op_if(frame):
     p, c, a = unpack(frame.x, 3)
-    stack.push(frame, x=cons(c, a))
+    stack.push(frame, x=[c, a])
     return bounce(leval_, Frame(frame, x=p, c=op_if_cont))
 
 
@@ -1407,7 +1338,7 @@ def op_if(frame):
 def op_lambda(frame):
     params, body = unpack(frame.x, 2)
 
-    if not (is_pair(params) or params is EL):
+    if not (isinstance(params, list) or params is EL):
         raise TypeError("expected param list, got {params!r}")
 
     return bounce(frame.c, Lambda(params, body, frame.e))
@@ -1482,20 +1413,20 @@ def op_trap(frame):
 
 
 def qq_list_setup(frame, form):
-    elt, form = splitcar(form)
-    if not (is_pair(form) or form is EL):
+    elt, form = form
+    if not (isinstance(form, list) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
     stack.push(frame, x=form)
     return bounce(qq_list_next, Frame(frame, x=elt, c=qq_list_cont))
 
 
 def qq_finish(frame, value):
-    res = EL if value is SENTINEL else cons(value, EL)
+    res = EL if value is SENTINEL else [value, EL]
     while True:
         f = stack.pop()
         if f.x is SENTINEL:
             break
-        res = cons(f.x, res)
+        res = [f.x, res]
     return bounce(frame.c, res)
 
 
@@ -1521,7 +1452,7 @@ def qq_spliced(value):
         return qq_list_setup(frame, form)
 
     while value is not EL:
-        elt, value = splitcar(value)
+        elt, value = value
         if value is EL:
             stack.push(frame, x=form)
             return bounce(qq_list_cont, elt)
@@ -1533,7 +1464,7 @@ def qq_spliced(value):
 def qq_list_next(frame):
     elt = frame.x
 
-    if is_pair(elt) and eq(car(elt), symbol("unquote-splicing")):
+    if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
         _, x = unpack(elt, 2)
         return bounce(leval_, Frame(frame, x=x, c=qq_spliced))
     return bounce(qq, Frame(frame, x=elt, c=qq_list_cont))
@@ -1541,7 +1472,7 @@ def qq_list_next(frame):
 
 def qq_list(frame):
     form = frame.x
-    app = car(form)
+    app = form[0]
 
     if eq(app, symbol("quasiquote")):
         _, x = unpack(form, 2)
@@ -1562,7 +1493,7 @@ def qq_list(frame):
 
 def qq(frame):
     form = frame.x
-    if is_pair(form):
+    if isinstance(form, list):
         return bounce(qq_list, frame)
     return bounce(frame.c, form)
 
@@ -1608,7 +1539,7 @@ def op_callcc(frame):
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
     cc = Continuation(frame.c)
-    arg = cons(cc, EL)
+    arg = [cc, EL]
     return bounce(x, Frame(frame, x=arg))
 
 
@@ -1642,7 +1573,7 @@ def op_do(frame):
     x = frame.x
     ret = EL
     while x is not EL:
-        ret, x = splitcar(x)
+        ret, x = x
     return bounce(frame.c, ret)
 
 
@@ -1674,11 +1605,16 @@ def op_error(frame):
 @glbl("eval")
 def op_eval(frame):
 
-    try:
-        (x,) = unpack(frame.x, 1)
+    args = frame.x
+    if args is EL:
+        raise TypeError("need at least one arg")
+    x, args = args
+    if args is EL:
         n_up = 0
-    except TypeError:
-        x, n_up = unpack(frame.x, 2)
+    else:
+        n_up, args = args
+        if args is not EL:
+            raise TypeError("too many args")
 
     if isinstance(x, str):
         l = []
@@ -1717,7 +1653,7 @@ def op_last(frame):
     (x,) = unpack(frame.x, 1)
     ret = EL
     while x is not EL:
-        ret, x = splitcar(x)
+        ret, x = x
     return bounce(frame.c, ret)
 
 
@@ -1744,7 +1680,7 @@ def op_mul2(frame):
 @glbl("nand")
 def op_nand(frame):
     def f(x, y):
-        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+        if not (isinstance(x, int) and isinstance(y, int)):
             raise TypeError(f"expected integers, got {x!r} and {y!r}")
         return ~(x & y)
 
@@ -1769,7 +1705,7 @@ def op_print_cont(value):
         return bounce(frame.c, EL)
     print(value, end=" ")
 
-    arg, args = splitcar(args)
+    arg, args = args
 
     stack.push(frame, x=args)
     return bounce(stringify_, Frame(frame, x=arg, c=op_print_cont))
@@ -1785,7 +1721,7 @@ def op_print(frame):
         print()
         return bounce(frame.c, EL)
 
-    arg, args = splitcar(args)
+    arg, args = args
 
     stack.push(frame, x=args)
     return bounce(stringify_, Frame(frame, x=arg, c=op_print_cont))
@@ -1828,7 +1764,7 @@ def op_type(frame):
             return symbol("()")
         if x is T:
             return symbol("#t")
-        if is_pair(x):
+        if isinstance(x, list):
             return symbol("pair")
         if isinstance(x, Symbol):
             return symbol("symbol")

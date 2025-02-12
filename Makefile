@@ -22,10 +22,17 @@ TFLAG:=-p
 
 PYTHON:=python3
 
-F:=lisp.py
+F:=lisp04-fast/lisp.py
+#F:=lisp04-trampolined-fancy/lisp.py
+
 LISP:=$(PYTHON) $(F)
 
+PROF:=$(PYTHON) prof.py $(F)
+
 all:	sicp bench factorial
+
+prof:
+	$(PROF) examples/sicp.lisp examples/bench.lisp
 
 run:
 	$(LISP) -
