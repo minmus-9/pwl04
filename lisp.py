@@ -31,6 +31,32 @@ import sys
 import traceback
 
 
+__all__ = (
+    "EL",
+    "Frame",
+    "LispError",
+    "Symbol",
+    "T",
+    "car",
+    "cdr",
+    "cons",
+    "eq",
+    "error",
+    "execute",
+    "genv",
+    "is_atom",
+    "is_pair",
+    "leval",
+    "load",
+    "parse",
+    "set_car",
+    "set_cdr",
+    "splitcar",
+    "stack",
+    "symbol",
+)
+
+
 TURBO = 0  ## as-is
 TURBO = 1  ## break pair encapsulation at hotspots
 TURBO = 2  ## use python dict for keyed tables
