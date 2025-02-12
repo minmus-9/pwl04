@@ -31,7 +31,9 @@ import sys
 import traceback
 
 
-TURBO = False
+TURBO = 0
+TURBO = 2
+TURBO = 1
 
 
 ## {{{ trampoline
@@ -173,22 +175,41 @@ class Table:
     def __bool__(self):
         return car(self.t) is not EL
 
-    def find(self, key):
-        compare = cdr(self.t)
-        prev = SENTINEL
-        link = car(self.t)
-        while link is not EL:
-            node = car(link)
-            if compare(key, car(node)):
-                if prev is not SENTINEL:
-                    ## move to first position
-                    set_cdr(prev, cdr(link))
-                    set_cdr(link, car(self.t))
-                    set_car(self.t, link)
-                return node
-            prev = link
-            link = cdr(link)
-        return SENTINEL
+    if TURBO > 0:
+
+        def find(self, key):
+            link, cmp = self.t
+            prev = SENTINEL
+            while link is not EL:
+                node = link[0]
+                if cmp(key, node[0]):
+                    if prev is not SENTINEL:
+                        prev[1] = link[1]
+                        link[1] = self.t[0]
+                        self.t[0] = link
+                    return node
+                prev = link
+                link = link[1]
+            return SENTINEL
+
+    else:
+
+        def find(self, key):
+            compare = cdr(self.t)
+            prev = SENTINEL
+            link = car(self.t)
+            while link is not EL:
+                node = car(link)
+                if compare(key, car(node)):
+                    if prev is not SENTINEL:
+                        ## move to first position
+                        set_cdr(prev, cdr(link))
+                        set_cdr(link, car(self.t))
+                        set_car(self.t, link)
+                    return node
+                prev = link
+                link = cdr(link)
+            return SENTINEL
 
     def clear(self):
         set_car(self.t, EL)
@@ -235,7 +256,7 @@ class Table:
         return cdr(node)
 
 
-if TURBO:
+if TURBO > 1:
 
     class Table(dict):  ## pylint: disable=function-redefined
         def __init__(self, _):
@@ -292,10 +313,10 @@ class SymbolKeyedTable(Table):
 
     @staticmethod
     def symbol_compare(x, y):
-        return isinstance(x, Symbol) and x is y
+        return x is y
 
     def find(self, key):
-        return super().find(symcheck(key))
+        return Table.find(self, symcheck(key))
 
 
 ## }}}
@@ -333,18 +354,38 @@ class Stack:
     def clear(self):
         self.s = cons(EL, EL)
 
-    def push(self, thing):
-        set_car(self.s, cons(thing, car(self.s)))
+    if TURBO > 0:
+
+        def push(self, thing):
+            self.s[0] = [thing, self.s[0]]
+
+    else:
+
+        def push(self, thing):
+            set_car(self.s, cons(thing, car(self.s)))
 
     append = push
 
-    def pop(self):
-        s = car(self.s)
-        if s is EL:
-            raise ValueError("stack is empty")
-        ret, s = splitcar(s)
-        set_car(self.s, s)
-        return ret
+    if TURBO > 0:
+
+        def pop(self):
+            s = self.s[0]
+            if s is EL:
+                raise ValueError("stack is empty")
+            ret = s[0]
+            s = s[1]
+            self.s[0] = s
+            return ret
+
+    else:
+
+        def pop(self):
+            s = car(self.s)
+            if s is EL:
+                raise ValueError("stack is empty")
+            ret, s = splitcar(s)
+            set_car(self.s, s)
+            return ret
 
     def top(self):
         s = car(self.s)
@@ -1041,7 +1082,8 @@ def leval_(frame):
     if is_pair(x):
         sym, args = splitcar(x)
     elif isinstance(x, Lambda):
-        sym, args = x, EL
+        sym = x
+        args = EL
     else:
         return bounce(frame.c, x)
     if isinstance(sym, Symbol):
