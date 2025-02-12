@@ -32,8 +32,8 @@ import traceback
 
 
 TURBO = 0
-TURBO = 2
 TURBO = 1
+#TURBO = 2
 
 
 ## {{{ trampoline
@@ -260,7 +260,7 @@ if TURBO > 1:
 
     class Table(dict):  ## pylint: disable=function-redefined
         def __init__(self, _):
-            super().__init__()
+            dict.__init__(self)
 
         def set(self, key, value):
             self[key] = value
@@ -285,7 +285,7 @@ if TURBO > 1:
 
 class StringKeyedTable(Table):
     def __init__(self):
-        super().__init__(self.string_compare)
+        Table.__init__(self, self.string_compare)
 
     @staticmethod
     def string_compare(x, y):
@@ -301,7 +301,8 @@ class StringKeyedTable(Table):
             type(key) is str and key  ## pylint: disable=unidiomatic-typecheck
         ):
             raise TypeError(f"expected string, got {key!r}")
-        return super().find(key)
+        return Table.find(self, key)
+
 
 ## }}}
 ## {{{ symbol-keyed table
@@ -309,7 +310,7 @@ class StringKeyedTable(Table):
 
 class SymbolKeyedTable(Table):
     def __init__(self):
-        super().__init__(self.symbol_compare)
+        Table.__init__(self, self.symbol_compare)
 
     @staticmethod
     def symbol_compare(x, y):
@@ -426,7 +427,7 @@ class Frame:
 
 class FrameStack(Stack):
     def push(self, thing, **kw):
-        super().push(Frame(thing, **kw))
+        Stack.push(self, Frame(thing, **kw))
 
 
 stack = FrameStack()
@@ -503,14 +504,27 @@ class Environment:
         if args is not EL:
             raise TypeError(f"too many args at {pl!r} <= {al!r}")
 
-    def get(self, sym, default):
-        e = self
-        while e is not SENTINEL:
-            x = car(e.e).get(sym, SENTINEL)
-            if x is not SENTINEL:
-                return x
-            e = cdr(e.e)
-        return default
+    if TURBO > 0:
+
+        def get(self, sym, default):
+            e = self
+            while e is not SENTINEL:
+                x = e.e[0].get(sym, SENTINEL)
+                if x is not SENTINEL:
+                    return x
+                e = e.e[1]
+            return default
+
+    else:
+
+        def get(self, sym, default):
+            e = self
+            while e is not SENTINEL:
+                x = car(e.e).get(sym, SENTINEL)
+                if x is not SENTINEL:
+                    return x
+                e = cdr(e.e)
+            return default
 
     def set(self, sym, value):
         car(self.e).set(sym, value)
@@ -1019,6 +1033,16 @@ def eval_setup(frame, args):
         arg, args = splitcar(args)
     else:
         arg, args = args, EL
+    stack.push(frame, x=args)
+    return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
+
+
+def eval_setup(frame, args):
+    if isinstance(args, list):
+        arg, args = args
+    else:
+        arg = args
+        args = EL
     stack.push(frame, x=args)
     return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
 
