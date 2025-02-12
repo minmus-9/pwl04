@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 ##
-## pwl - python with lisp, a collection of lisp evaluators for Python
-##       https://github.com/minmus-9/pwl
+## pwl04 - python with lisp, version 04-trampolined-fancy
+##       https://github.com/minmus-9/pwl04
 ## Copyright (C) 2025  Mark Hays (github:minmus-9)
 ##
 ## This program is free software: you can redistribute it and/or modify
@@ -31,9 +31,9 @@ import sys
 import traceback
 
 
-TURBO = 0
-TURBO = 1
-#TURBO = 2
+TURBO = 0  ## as-is
+TURBO = 1  ## break pair encapsulation at hotspots
+TURBO = 2  ## use python dict for keyed tables
 
 
 ## {{{ trampoline
@@ -184,6 +184,7 @@ class Table:
                 node = link[0]
                 if cmp(key, node[0]):
                     if prev is not SENTINEL:
+                        ## pylint: disable=unsupported-assignment-operation
                         prev[1] = link[1]
                         link[1] = self.t[0]
                         self.t[0] = link
@@ -1028,23 +1029,27 @@ def leval(sexpr, env=SENTINEL):
     return trampoline(leval_, Frame(SENTINEL, x=sexpr, e=e, c=land))
 
 
-def eval_setup(frame, args):
-    if is_pair(args):
-        arg, args = splitcar(args)
-    else:
-        arg, args = args, EL
-    stack.push(frame, x=args)
-    return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
+if TURBO > 0:
 
+    def eval_setup(frame, args):
+        if isinstance(args, list):
+            arg, args = args
+        else:
+            arg = args
+            args = EL
+        stack.push(frame, x=args)
+        return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
 
-def eval_setup(frame, args):
-    if isinstance(args, list):
-        arg, args = args
-    else:
-        arg = args
-        args = EL
-    stack.push(frame, x=args)
-    return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
+else:
+
+    def eval_setup(frame, args):
+        if is_pair(args):
+            arg, args = splitcar(args)
+        else:
+            arg = args
+            args = EL
+        stack.push(frame, x=args)
+        return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
 
 
 def eval_next_arg(value):
@@ -1895,27 +1900,6 @@ def op_ffi_time(args):
 
 
 RUNTIME = r"""
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; lisp04.lisp - runtime, lots of which is from other sources
-;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;;
-;; pwl - python with lisp, a collection of lisp evaluators for Python
-;;       https://github.com/minmus-9/pwl
-;; Copyright (C) 2025  Mark Hays (github:minmus-9)
-;; 
-;; This program is free software: you can redistribute it and/or modify
-;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation, either version 3 of the License, or
-;; (at your option) any later version.
-;; 
-;; This program is distributed in the hope that it will be useful,
-;; but WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-;; GNU General Public License for more details.
-;; 
-;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 ;; {{{ basics
 
 ;; to accompany quasiquote
