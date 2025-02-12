@@ -69,7 +69,7 @@ __all__ = (
 
 
 TURBO = 0  ## as-is
-TURBO = 1  ## use python dict for keyed tables
+# TURBO = 1  ## use python dict for keyed tables
 
 
 ## {{{ trampoline
@@ -214,15 +214,15 @@ class Table:
     def find(self, key):
         ## pylint: disable=unsupported-assignment-operation
         ## pylint: disable=unsubscriptable-object
-        link, cmp = self.t
+        link, cmp = t = self.t
         prev = SENTINEL
         while link is not EL:
             node = link[0]
             if cmp(key, node[0]):
                 if prev is not SENTINEL:
                     prev[1] = link[1]
-                    link[1] = self.t[0]
-                    self.t[0] = link
+                    link[1] = t[0]
+                    t[0] = link
                 return node
             prev = link
             link = link[1]

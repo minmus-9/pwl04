@@ -67,7 +67,7 @@ main()
         PROFILE,
     )
 
-    pstats.Stats(PROFILE).strip_dirs().sort_stats("tottime").print_stats(0.15)
+    pstats.Stats(PROFILE).strip_dirs().sort_stats("tottime").print_stats(0.14)
 
 
 if __name__ == "__main__":
