@@ -19,8 +19,12 @@
 
 """
 lisp.py -- this is lisp04-trampolined-fancy/lisp.py where all data
-structures are based on atoms and pairs. it is s.l.o.w.
+structures are based on pairs. it is s.l.o.w. unless TURBO > 0.
 """
+
+
+## {{{ header
+
 
 ## pylint: disable=invalid-name,too-many-lines,unbalanced-tuple-unpacking
 ## XXX pylint: disable=missing-docstring
@@ -57,9 +61,12 @@ __all__ = (
 )
 
 
+## }}}
+
+
 TURBO = 0  ## as-is
-TURBO = 1  ## break pair encapsulation at hotspots
-TURBO = 2  ## use python dict for keyed tables
+#TURBO = 1  ## break pair encapsulation at hotspots
+#TURBO = 2  ## use python dict for keyed tables
 
 
 ## {{{ trampoline
