@@ -127,7 +127,7 @@
 ;; the first thing you'll notice about this code is how slow it is. while
 ;; you're waiting, the second thing you'll notice is how slow it is.
 ;(count-change 100)
-(count-change 10)
+(count-change 25)
 
 ;;; summation p.77-78
 (define sum (lambda (term a next b) (

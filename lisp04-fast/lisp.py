@@ -69,7 +69,8 @@ __all__ = (
 
 
 TURBO = 0  ## as-is
-# TURBO = 1  ## use python dict for keyed tables
+TURBO = 1  ## break stack encapsulation in FrameStack (5% speedup)
+# TURBO = 2  ## use python dict for keyed tables (large speedup)
 
 
 ## {{{ trampoline
@@ -239,8 +240,7 @@ class Table:
         node = self.find(key)
         if node is SENTINEL:
             node = [key, value]
-            link = [node, self.t[0]]
-            self.t[0] = link
+            self.t[0] = [node, self.t[0]]
         else:
             node[1] = value
         return EL
@@ -252,27 +252,17 @@ class Table:
         node[1] = value
         return True
 
-    def setdefault(self, key, value):
-        node = self.find(key)
-        if node is SENTINEL:
-            node = [key, value]
-            link = [node, self.t[0]]
-            self.t[0] = link
-            return value
-        return node[1]
-
     def setdefault_func(self, key, func):
         node = self.find(key)
         if node is SENTINEL:
             value = func(key)
             node = [key, value]
-            link = [node, self.t[0]]
-            self.t[0] = link
+            self.t[0] = [node, self.t[0]]
             return value
         return node[1]
 
 
-if TURBO > 0:
+if TURBO > 1:
 
     class Table(dict):  ## pylint: disable=function-redefined
         def __init__(self, _):
@@ -412,9 +402,17 @@ class Frame:
 
 
 class FrameStack(Stack):
-    def push(self, thing, x=None, c=None, e=None):
-        ## pylint: disable=arguments-differ
-        Stack.push(self, Frame(thing, x, c, e))
+    if TURBO > 0:
+
+        def push(self, thing, x=None, c=None, e=None):
+            ## pylint: disable=arguments-differ
+            self.s[0] = [Frame(thing, x, c, e), self.s[0]]
+
+    else:
+
+        def push(self, thing, x=None, c=None, e=None):
+            ## pylint: disable=arguments-differ
+            Stack.push(self, Frame(thing, x, c, e))
 
 
 stack = FrameStack()
