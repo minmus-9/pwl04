@@ -22,7 +22,8 @@ TFLAG:=-p
 
 PYTHON:=python3
 
-LISP=$(PYTHON) ./lisp.py
+F:=lisp.py
+LISP:=$(PYTHON) $(F)
 
 all:	sicp bench factorial
 
