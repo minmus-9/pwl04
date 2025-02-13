@@ -200,7 +200,7 @@ def splitcar(x):
 
 
 ## }}}
-## {{{ keyed table
+## {{{ key-value table
 
 
 class Table:
@@ -484,8 +484,8 @@ class Environment:
             elif args is EL:
                 raise TypeError(f"not enough args at {pl!r} <= {al!r}")
             else:
-                a, args = args
-                d.set(p, a)
+                d.set(p, args[0])
+                args = args[1]
         if variadic:
             raise SyntaxError(f"'&' ends param list {pl!r} <= {al!r}")
         if args is not EL:
