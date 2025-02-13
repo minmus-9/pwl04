@@ -70,7 +70,7 @@ __all__ = (
 
 TURBO = 0  ## as-is
 TURBO = 1  ## break stack encapsulation in FrameStack (5% speedup)
-# TURBO = 2  ## use python dict for keyed tables (large speedup)
+# TURBO = 2  ## use python dict for keyed tables (~30% speedup)
 
 
 ## {{{ trampoline
@@ -711,13 +711,6 @@ class Scanner:
 
 
 class Parser:
-    Q_MAP = {
-        "'": symbol("quote"),
-        "`": symbol("quasiquote"),
-        ",": symbol("unquote"),
-        ",@": symbol("unquote-splicing"),
-    }
-
     def __init__(self, callback):
         self.callback = callback
         self.stack = Stack()
@@ -774,7 +767,15 @@ class Parser:
         return ret
 
     def set_up_quote(self, s):
-        s = self.Q_MAP[s]
+        if s == "'":
+            s = symbol("quote")
+        elif s == ",":
+            s = symbol("unquote")
+        elif s == ",@":
+            s = symbol("unquote-splicing")
+        else:
+            assert s == "`"
+            s = symbol("quasiquote")
         self.qstack.append(s)
 
 
@@ -1258,8 +1259,8 @@ def unpack(args, n):
     for _ in range(n):
         if args is EL:
             raise TypeError(f"not enough args, need {n}")
-        arg, args = args
-        ret.append(arg)
+        ret.append(args[0])
+        args = args[1]
     if args is not EL:
         raise TypeError(f"too many args, need {n}")
     return ret
