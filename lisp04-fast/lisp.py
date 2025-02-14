@@ -227,8 +227,8 @@ class Stack:
     def clear(self):
         self.s = EL
 
-    def push(self, thing):
-        self.s = [thing, self.s]
+    def push(self, x):
+        self.s = [x, self.s]
 
     def pop(self):
         ret, self.s = self.s
