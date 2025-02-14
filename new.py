@@ -12,7 +12,6 @@ import traceback
 
 
 __all__ = (
-    "Context",
     "EL",
     "Environment",
     "Frame",
@@ -26,10 +25,15 @@ __all__ = (
     "cons",
     "eq",
     "error",
+    "ffi",
+    "glbl",
     "listcheck",
     "set_car",
     "set_cdr",
+    "spcl",
     "split",
+    "stack",
+    "symbol",
     "symbolcheck",
 )
 
@@ -96,6 +100,28 @@ def symbolcheck(x):
     if isinstance(x, Symbol):
         return x
     raise TypeError(f"expected symbol, got {x!r}")
+
+
+## }}}
+## {{{ global symbol table
+
+
+class SymbolTable:
+    ## pylint: disable=too-few-public-methods
+
+    __slots__ = ("t",)
+
+    def __init__(self):
+        self.t = {}
+
+    def symbol(self, s):
+        assert type(s) is str and s  ## pylint: disable=unidiomatic-typecheck
+        if s not in self.t:
+            self.t[s] = Symbol(s)
+        return self.t[s]
+
+
+symbol = SymbolTable().symbol
 
 
 ## }}}
@@ -210,23 +236,28 @@ class Stack:
             raise ValueError("stack is empty")
         return self.s[0]
 
+    def get(self):
+        return self.s
+
+    def set(self, x):
+        self.s = x
+
 
 ## }}}
 ## {{{ environment
 
 
 class Environment:
-    __slots__ = ("c", "d", "p")
+    __slots__ = ("d", "p")
 
-    def __init__(self, ctx, params, args, parent):
-        self.c = ctx
+    def __init__(self, params, args, parent):
         self.d = {}
         self.p = parent
         self.bind(params, args)
 
     def bind(self, params, args):
         d = self.d
-        v = self.c.symbol("&")
+        v = symbol("&")
         variadic = False
         while params is not EL:
             p, params = params
@@ -250,14 +281,11 @@ class Environment:
         symbolcheck(key)
         e = self
         while e is not SENTINEL:
-            x = e.get_(key)
+            x = e.d.get(key)
             if x is not SENTINEL:
                 return x
             e = e.p
         return default
-
-    def get_(self, key):
-        return self.d.get(key, SENTINEL)
 
     def set(self, key, value):
         self.d[symbolcheck(key)] = value
@@ -271,6 +299,46 @@ class Environment:
                 return
             e = e.p
         raise NameError(str(key))
+
+
+## }}}
+## {{{ global environment and stack
+
+
+genv = Environment([symbol("#t"), EL], [T, EL], SENTINEL)
+
+
+stack = Stack()
+
+
+## }}}
+## {{{ primitive definition decorators
+
+
+def glbl(name):
+    def wrap(func):
+        genv.set(name, func)
+        return func
+
+    return wrap
+
+
+def spcl(name):
+    def wrap(func):
+        genv.set(name, func)
+        func.special = True
+        return func
+
+    return wrap
+
+
+def ffi(name):
+    def wrap(func):
+        genv.set(name, func)
+        func.ffi = True
+        return func
+
+    return wrap
 
 
 ## }}}
@@ -486,8 +554,7 @@ class Scanner:
 
 
 class Parser:
-    def __init__(self, ctx, callback):
-        self.ctx = ctx
+    def __init__(self, callback):
         self.callback = callback
         self.stack = Stack()
         self.qstack = Stack()
@@ -495,7 +562,7 @@ class Parser:
         self.feed = self.scanner.feed
 
     def t_sym(self, token):
-        self.add(self.ctx.symbol(token))
+        self.add(symbol(token))
 
     def t_lpar(self, _):
         self.qstack.push(")")
@@ -543,7 +610,6 @@ class Parser:
         return ret
 
     def set_up_quote(self, s):
-        symbol = self.ctx.symbol
         if s == "'":
             s = symbol("quote")
         elif s == ",":
@@ -557,14 +623,108 @@ class Parser:
 
 
 ## }}}
+## {{{ high level parsing routines
+
+
+def parse(text, callback):
+    p = Parser(callback)
+    p.feed(text)
+    p.feed(None)
+
+
+def execute(text):
+    results = []
+
+    def callback(sexpr):
+        results.append(leval(sexpr))
+
+    parse(text, callback)
+    return results
+
+
+def load(filename, callback=None):
+    if os.path.isabs(filename):
+        path = filename
+    else:
+        for d in ["", os.path.dirname(__file__)] + sys.path:
+            path = os.path.join(d, filename)
+            if os.path.isfile(path):
+                break
+        else:
+            raise FileNotFoundError(filename)
+    with open(path, "r", encoding=locale.getpreferredencoding()) as fp:
+        if callback:
+            parse(fp.read(), callback)
+        else:
+            execute(fp.read())
+
+
+## }}}
+## {{{ repl and main
+
+
+def repl(callback):
+    try:
+        import readline as _  ## pylint: disable=import-outside-toplevel
+    except ImportError:
+        pass
+
+    ## pylint: disable=unused-variable
+    p, rc, stop = Parser(callback), 0, False
+
+    def feed(x):
+        nonlocal p, rc, stop
+        try:
+            p.feed(x)
+        except SystemExit as exc:
+            stop, rc = True, exc.args[0]
+        except:  ## pylint: disable=bare-except
+            p = Parser(callback)
+            traceback.print_exception(*sys.exc_info())
+
+    while not stop:
+        try:
+            line = input("lisp> ") + "\n"
+        except (EOFError, KeyboardInterrupt):
+            feed(None)
+            break
+        feed(line)
+    print("\nbye")
+    return rc
+
+
+def main(force_repl=False):
+    def callback(sexpr):
+        try:
+            value = leval(sexpr)
+        except SystemExit:
+            raise
+        except:
+            print("Offender (pyth):", sexpr)
+            print("Offender (lisp):", stringify(sexpr), "\n")
+            raise
+        if value is not EL:
+            print(stringify(value))
+
+    stop = True
+    for filename in sys.argv[1:]:
+        if filename == "-":
+            stop = False
+            break
+        load(filename, callback=callback)
+        stop = True
+    if force_repl or not stop:
+        raise SystemExit(repl(callback))
+
+
+## }}}
 ## {{{ lambda
 
 
 class Lambda:
-    __slots__ = ["c", "p", "b", "e", "special"]
+    __slots__ = ["p", "b", "e", "special"]
 
-    def __init__(self, ctx, params, body, env):
-        self.c = ctx
+    def __init__(self, params, body, env):
         self.p = params
         self.b = body
         self.e = env
@@ -573,30 +733,28 @@ class Lambda:
     def __call__(self, frame):
         args = frame.x
         p = frame.e if self.special else self.e
-        e = Environment(self.c, self.p, args, p)
-        return bounce(self.c.leval_, frame.new(x=self.b, e=e))
+        e = Environment(self.p, args, p)
+        return bounce(leval_, frame.new(x=self.b, e=e))
 
     ###
 
-    def lambda_body_done(self, bodystr):
+    def lambda_body_done_(self, bodystr):
         ## pylint: disable=no-self-use
-        frame = self.c.s.pop()
+        frame = stack.pop()
         paramstr = frame.x
         return bounce(frame.c, "(lambda " + paramstr + " " + bodystr + ")")
 
-    def lambda_params_done(self, paramstr):
-        frame = self.c.s.pop()
+    def lambda_params_done_(self, paramstr):
+        frame = stack.pop()
         body = frame.x
-        self.c.s.push(frame.new(x=paramstr))
-        return bounce(
-            self.c.stringify_, frame.new(x=body, c=self.lambda_body_done)
-        )
+        stack.push(frame.new(x=paramstr))
+        return bounce(stringify_, frame.new(x=body, c=self.lambda_body_done_))
 
     def stringify_(self, frame):
-        self.c.s.push(frame.new(x=self.b))
+        stack.push(frame.new(x=self.b))
         return bounce(
-            self.c.stringify_,
-            frame.new(x=self.p, c=self.lambda_params_done),
+            stringify_,
+            frame.new(x=self.p, c=self.lambda_params_done_),
         )
 
 
@@ -607,616 +765,288 @@ class Lambda:
 class Continuation:
     ## pylint: disable=too-few-public-methods
 
-    __slots__ = ("c", "k", "s")
+    __slots__ = ["c", "s"]
 
-    def __init__(self, ctx, continuation):
-        self.c = ctx
-        self.k = continuation
-        self.s = ctx.s.get()
+    def __init__(self, continuation):
+        self.c = continuation
+        self.s = stack.get()
 
     def __call__(self, frame):
         (x,) = unpack(frame.x, 1)
-        self.c.s.set(self.s)
-        return bounce(self.k, x)  ## that's it.
+        stack.set(self.s)
+        return bounce(self.c, x)  ## that's it.
 
 
 ## }}}
-## {{{ primitive definition decorators
+## {{{ stringify
 
 
-class Nope_:
-    def __contains__(self, key):
-        return False
+def stringify(sexpr):
+    return trampoline(stringify_, Frame(sexpr, land, SENTINEL))
 
 
-NOPE_ = Nope_()
-
-
-class Global:
-    __slots__ = ("d", "p", "t")
-
-    def __init__(self):
-        self.d = NOPE  ## bait for Environment.setbang()
-        self.p = SENTINEL
-        self.t = {}
-
-    def get_(self, key):
-        return self.t.get(str(key), SENTINEL)
-
-    @staticmethod
-    def set(key, value):
-        raise RuntimeError("access denied.")
-
-    @staticmethod
-    def setbang(key, value):
-        raise RuntimeError("access denied.")
-
-
-GENV_ = Global()
-
-
-def glbl(name):
-    def wrap(func):
-        GENV_.t[name] = func
-        return func
-
-    return wrap
-
-
-def spcl(name):
-    def wrap(func):
-        GENV_.t[name] = func
-        func.special = True
-        return func
-
-    return wrap
-
-
-def ffi(name):
-    def wrap(func):
-        GENV_.t[name] = func
-        func.ffi = True
-        return func
-
-    return wrap
-
-
-## }}}
-## {{{ context
-
-
-class Context:
-    ## pylint: disable=too-many-public-methods
-
-    __slots__ = ("s", "e", "t_")
-
-    def __init__(self):
-        self.t_ = {}
-        self.s = Stack()
-        self.e = self.new_environment([self.symbol("#t"), EL], [T, EL], GENV_)
-
-    ## {{{ factories
-
-    def new_continuation(self, continuation):
-        return Continuation(self, continuation)
-
-    def new_environment(self, params, args, parent):
-        return Environment(self, params, args, parent)
-
-    def new_lambda(self, params, body, env):
-        return Lambda(self, params, body, env)
-
-    def new_parser(self, callback):
-        return Parser(self, callback)
-
-    def symbol(self, s):
-        assert type(s) is str and s  ## pylint: disable=unidiomatic-typecheck
-        if s not in self.t_:
-            self.t_[s] = Symbol(s)
-        return self.t_[s]
-
-    ## }}}
-    ## {{{ high level parsing
-
-    def parse(self, text, callback):
-        p = self.new_parser(callback)
-        p.feed(text)
-        p.feed(None)
-
-    def execute(self, text):
-        results = []
-
-        def callback(sexpr):
-            results.append(self.leval(sexpr))
-
-        self.parse(text, callback)
-        return results
-
-    def load(self, filename, callback=None):
-        if os.path.isabs(filename):
-            path = filename
-        else:
-            for d in ["", os.path.dirname(__file__)] + sys.path:
-                path = os.path.join(d, filename)
-                if os.path.isfile(path):
-                    break
-            else:
-                raise FileNotFoundError(filename)
-        with open(path, "r", encoding=locale.getpreferredencoding()) as fp:
-            if callback:
-                self.parse(fp.read(), callback)
-            else:
-                self.execute(fp.read())
-
-    ## }}}
-    ## {{{ repl and main
-
-    def repl(self, callback):
-        try:
-            import readline as _  ## pylint: disable=import-outside-toplevel
-        except ImportError:
-            pass
-
-        ## pylint: disable=unused-variable
-        p, rc, stop = self.new_parser(callback), 0, False
-
-        def feed(x):
-            nonlocal p, rc, stop
-            try:
-                p.feed(x)
-            except SystemExit as exc:
-                stop, rc = True, exc.args[0]
-            except:  ## pylint: disable=bare-except
-                p = self.new_parser(callback)
-                traceback.print_exception(*sys.exc_info())
-
-        while not stop:
-            try:
-                line = input("lisp> ") + "\n"
-            except (EOFError, KeyboardInterrupt):
-                feed(None)
-                break
-            feed(line)
-        print("\nbye")
-        return rc
-
-    def main(self, force_repl=False):
-        def callback(sexpr):
-            try:
-                value = self.leval(sexpr)
-            except SystemExit:
-                raise
-            except:
-                print("Offender (pyth):", sexpr)
-                print("Offender (lisp):", self.stringify(sexpr), "\n")
-                raise
-            if value is not EL:
-                print(self.stringify(value))
-
-        stop = True
-        for filename in sys.argv[1:]:
-            if filename == "-":
-                stop = False
-                break
-            self.load(filename, callback=callback)
-            stop = True
-        if force_repl or not stop:
-            raise SystemExit(self.repl(callback))
-
-    ## }}}
-    ## {{{ stringify
-
-    def stringify(self, sexpr, env=SENTINEL):
-        e = self.e if env is SENTINEL else env
-        return trampoline(self.stringify_, Frame(sexpr, land, e))
-
-    def stringify_setup_(self, frame, args):
-        if isinstance(args, list):
-            arg, args = args
-        else:
-            arg = args
-            args = EL
-            self.s.push(frame.new(x="."))
-        self.s.push(frame.new(x=args))
-        return bounce(
-            self.stringify_, frame.new(x=arg, c=self.stringify_next_)
-        )
-
-    def stringify_next_(self, value):
-        stack = self.s
-        frame = stack.pop()
-        args = frame.x
-
-        if args is EL:
-            parts = [value]
-            while True:
-                x = stack.pop()
-                if x is SENTINEL:
-                    break
-                parts.insert(0, x)
-            return bounce(frame.c, "(" + " ".join(parts) + ")")
-
-        stack.push(frame.new(x=value))
-        return self.stringify_setup_(frame, args)
-
-    def stringify_(self, frame):
-        ## pylint: disable=too-many-return-statements,too-many-locals
-        x = frame.x
-        if x is EL:
-            return bounce(frame.c, "()")
-        if x is T:
-            return bounce(frame.c, "#t")
-        if isinstance(x, (Symbol, int, float, str)):
-            return bounce(frame.c, str(x))
-        if isinstance(x, Lambda):
-            return bounce(x.stringify_, frame)
-        if isinstance(x, Continuation):
-            return bounce(frame.c, "[continuation]")
-        if callable(x):
-            return bounce(frame.c, "[primitive]")
-        if not isinstance(x, list):
-            return bounce(frame.c, "[opaque]")
-        self.s.push(SENTINEL)
-        return self.stringify_setup_(frame, x)
-
-    ## }}}
-    ## {{{ eval
-
-    def leval(self, sexpr, env=SENTINEL):
-        e = self.e if env is SENTINEL else env
-        return trampoline(self.leval_, Frame(sexpr, land, e))
-
-    def eval_setup_(self, frame, args):
-        if isinstance(args, list):
-            arg, args = args
-        else:
-            arg = args
-            args = EL
-        self.s.push(frame.new(x=args))
-        return bounce(self.leval_, frame.new(x=arg, c=self.eval_next_arg_))
-
-    def eval_next_arg_(self, value):
-        stack = self.s
-        frame = stack.pop()
-        args = frame.x
-
-        if args is EL:
-            ret = [value, EL]
-            while True:
-                x = stack.pop()
-                if x is SENTINEL:
-                    proc = stack.pop()
-                    break
-                ret = [x, ret]
-            ## at this point, need to see if proc is ffi
-            if getattr(proc, "ffi", False):
-                ## should construct args as a pylist not pair but then Frame would
-                ## need a new field to hold proc all the way through. this is about
-                ## a global 5% performance hit. i care more about ffi capability
-                ## than performance. plus, this thing is slow enough already.
-                return bounce(self.do_ffi, frame.new(x=[ret, proc]))
-            return bounce(proc, frame.new(x=ret))
-
-        stack.push(frame.new(x=value))
-        return self.eval_setup_(frame, args)
-
-    def eval_proc_done_(self, proc):
-        stack = self.s
-        frame = stack.pop()
-        args = frame.x
-
-        if not callable(proc):  ## python func Lambda Continuation
-            raise TypeError(f"expected callable, got {proc!r}")
-
-        ## specials don't have their args evaluated
-        if getattr(proc, "special", False):
-            return bounce(proc, frame)
-
-        ## shortcut the no-args case
-        if args is EL:
-            return bounce(proc, frame)
-
-        ## evaluate args...
-
-        stack.push(proc)
-        stack.push(SENTINEL)
-
-        return self.eval_setup_(frame, args)
-
-    def leval_(self, frame):
-        ## pylint: disable=too-many-locals
-
-        stack = self.s
-        x = frame.x
-        if isinstance(x, Symbol):
-            obj = frame.e.get(x, SENTINEL)
-            if obj is SENTINEL:
-                raise NameError(x)
-            return bounce(frame.c, obj)
-        if isinstance(x, list):
-            sym, args = x
-        elif isinstance(x, Lambda):
-            sym = x
-            args = EL
-        else:
-            return bounce(frame.c, x)
-        if isinstance(sym, Symbol):
-            op = frame.e.get(sym, SENTINEL)
-            if op is SENTINEL:
-                raise NameError(sym)
-            if getattr(op, "special", False):
-                return bounce(op, frame.new(x=args))
-            sym = op
-        elif callable(sym):
-            ## primitive Lambda Continuation
-            stack.push(frame.new(x=args))
-            return bounce(self.eval_proc_done_, sym)
-        elif not isinstance(sym, list):
-            raise TypeError(f"expected proc or list, got {sym!r}")
-
-        stack.push(frame.new(x=args))
-        return bounce(self.leval_, frame.new(x=sym, c=self.eval_proc_done_))
-
-    ## }}}
-    ## {{{ ffi
-
-    def do_ffi(self, frame):
-        af = frame.x
-        args, func = af
-        self.s.push(frame.new(x=func))
-
-        if args is EL:
-            return bounce(self.ffi_args_done_, [])
-
-        return bounce(
-            self.lisp_value_to_py_value_,
-            frame.new(x=args, c=self.ffi_args_done_),
-        )
-
-    def lisp_value_to_py_value(self, x):
-        return trampoline(
-            self.lisp_value_to_py_value_, Frame(x, land, SENTINEL)
-        )
-
-    def lv2pv_setup_(self, frame, args):
+def stringify_setup(frame, args):
+    if isinstance(args, list):
         arg, args = args
-        self.s.push(frame.new(x=args))
-        return bounce(
-            self.lisp_value_to_py_value_,
-            frame.new(x=arg, c=self.lv2pv_next_arg_),
-        )
-
-    def lv2pv_next_arg_(self, value):
-        stack = self.s
-        frame = stack.pop()
-        args = frame.x
-
-        if args is EL:
-            ret = [value]
-            while True:
-                x = stack.pop()
-                if x is SENTINEL:
-                    break
-                ret.insert(0, x)
-            return bounce(frame.c, ret)
-
-        stack.push(frame.new(x=value))
-        return self.lv2pv_setup_(frame, args)
-
-    def lisp_value_to_py_value_(self, frame):
-        x = frame.x
-        if x is EL:
-            x = None
-        elif x is T:
-            x = True
-        if not isinstance(x, list):
-            return bounce(frame.c, x)
-
-        self.s.push(frame.new(x=SENTINEL))
-        return self.lv2pv_setup_(frame, x)
-
-    def py_value_to_lisp_value(self, x):
-        return trampoline(
-            self.py_value_to_lisp_value_, Frame(x, land, SENTINEL)
-        )
-
-    def pv2lv_setup_(self, frame, args):
-        arg = args.pop(0)
-        self.s.push(frame.new(x=args))
-        return bounce(
-            self.py_value_to_lisp_value_,
-            frame.new(x=arg, c=self.pv2lv_next_arg_),
-        )
-
-    def pv2lv_next_arg_(self, value):
-        stack = self.s
-        frame = stack.pop()
-        args = frame.x
-
-        if not args:
-            ret = [value, EL]
-            while True:
-                x = stack.pop()
-                if x is SENTINEL:
-                    break
-                ret = [x, ret]
-            return bounce(frame.c, ret)
-
-        stack.push(value)
-        return self.pv2lv_setup_(frame, args)
-
-    def py_value_to_lisp_value_(self, frame):
-        x = frame.x
-        if x is None or x is False:
-            x = EL
-        elif x is True:
-            x = T
-        if not isinstance(x, (list, tuple)):
-            return bounce(frame.c, x)
-        if not x:
-            return bounce(frame.c, EL)
-
-        self.s.push(SENTINEL)
-        return self.pv2lv_setup_(frame, list(x))
-
-    def ffi_args_done_(self, args):
-        frame = self.s.pop()
-        func = frame.x
-
-        ret = func(args)
-
-        return bounce(self.py_value_to_lisp_value_, frame.new(x=ret))
+    else:
+        arg = args
+        args = EL
+        stack.push(frame.new(x="."))
+    stack.push(frame.new(x=args))
+    return bounce(stringify_, frame.new(x=arg, c=stringify_cont))
 
 
-## }}}
-
-
-## }}}
-## {{{ special forms
-
-
-def op_cond_setup(frame, args):
-    head, args = args
-    predicate, consequent = unpack(head, 2)
-
-    stack.push(frame, x=[args, consequent])
-    return bounce(leval_, Frame(frame, c=op_cond_cont, x=predicate))
-
-
-def op_cond_cont(value):
+def stringify_cont(value):
     frame = stack.pop()
-    args, consequent = frame.x
-
-    if value is not EL:
-        return bounce(leval_, Frame(frame, x=consequent))
-    if args is EL:
-        return bounce(frame.c, EL)
-    return op_cond_setup(frame, args)
-
-
-@spcl("cond")
-def op_cond(frame):
     args = frame.x
+
     if args is EL:
+        parts = [value]
+        while True:
+            f = stack.pop()
+            if f.x is SENTINEL:
+                break
+            parts.insert(0, f.x)
+        return bounce(frame.c, "(" + " ".join(parts) + ")")
+
+    stack.push(frame.new(x=value))
+    return stringify_setup(frame, args)
+
+
+def stringify_(frame):
+    ## pylint: disable=too-many-return-statements,too-many-locals
+    x = frame.x
+    if x is EL:
+        return bounce(frame.c, "()")
+    if x is T:
+        return bounce(frame.c, "#t")
+    if isinstance(x, (Symbol, int, float, str)):
+        return bounce(frame.c, str(x))
+    if isinstance(x, Lambda):
+        return bounce(x.stringify_, frame)
+    if isinstance(x, Continuation):
+        return bounce(frame.c, "[continuation]")
+    if callable(x):
+        return bounce(frame.c, "[primitive]")
+    if not isinstance(x, list):
+        return bounce(frame.c, "[opaque]")
+
+    stack.push(frame.new(x=SENTINEL))
+
+    return stringify_setup(frame, x)
+
+
+## }}}
+## {{{ eval
+
+
+def leval(sexpr, env=SENTINEL):
+    e = genv if env is SENTINEL else env
+    return trampoline(leval_, Frame(sexpr, land, e))
+
+
+def eval_setup(frame, args):
+    if isinstance(args, list):
+        arg, args = args
+    else:
+        arg = args
+        args = EL
+    stack.push(frame.new(x=args))
+    return bounce(leval_, frame.new(x=arg, c=eval_next_arg))
+
+
+def eval_next_arg(value):
+    frame = stack.pop()
+    args = frame.x
+
+    if args is EL:
+        ret = [value, EL]
+        while True:
+            f = stack.pop()
+            if f.x is SENTINEL:
+                proc = f.c  ## NB abuse of .c field
+                break
+            ret = [f.x, ret]
+        ## at this point, need to see if proc is ffi
+        if getattr(proc, "ffi", False):
+            ## should construct args as a pylist not pair but then Frame would
+            ## need a new field to hold proc all the way through. this is about
+            ## a global 5% performance hit. i care more about ffi capability
+            ## than performance. plus, this thing is slow enough already.
+            return bounce(do_ffi, frame.new(x=[ret, proc]))
+        return bounce(proc, frame.new(x=ret))
+
+    stack.push(frame.new(x=value))
+    return eval_setup(frame, args)
+
+
+def eval_proc_done(proc):
+    frame = stack.pop()
+    args = frame.x
+
+    if not callable(proc):  ## python func Lambda Continuation
+        raise TypeError(f"expected callable, got {proc!r}")
+
+    ## specials don't have their args evaluated
+    if getattr(proc, "special", False):
+        return bounce(proc, frame)
+
+    ## shortcut the no-args case
+    if args is EL:
+        return bounce(proc, frame)
+
+    ## evaluate args...
+
+    stack.push(frame.new(c=proc, x=SENTINEL))  ## NB abuse .c field
+
+    return eval_setup(frame, args)
+
+
+def leval_(frame):
+    ## pylint: disable=too-many-locals
+
+    x = frame.x
+    if isinstance(x, Symbol):
+        obj = frame.e.get(x, SENTINEL)
+        if obj is SENTINEL:
+            raise NameError(x)
+        return bounce(frame.c, obj)
+    if isinstance(x, list):
+        sym, args = x
+    elif isinstance(x, Lambda):
+        sym = x
+        args = EL
+    else:
+        return bounce(frame.c, x)
+    if isinstance(sym, Symbol):
+        op = frame.e.get(sym, SENTINEL)
+        if op is SENTINEL:
+            raise NameError(sym)
+        if getattr(op, "special", False):
+            return bounce(op, frame.new(x=args))
+        sym = op
+    if callable(sym):
+        ## primitive Lambda Continuation
+        stack.push(frame.new(x=args))
+        return bounce(eval_proc_done, sym)
+    if not isinstance(sym, list):
+        raise TypeError(f"expected proc or list, got {sym!r}")
+
+    stack.push(frame.new(x=args))
+    return bounce(leval_, frame.new(x=sym, c=eval_proc_done))
+
+
+## }}}
+## {{{ ffi
+
+
+def do_ffi(frame):
+    af = frame.x
+    args, func = af
+    stack.push(frame.new(x=func))
+
+    if args is EL:
+        return bounce(ffi_args_done, [])
+
+    return bounce(lisp_value_to_py_value_, frame.new(x=args, c=ffi_args_done))
+
+
+def lisp_value_to_py_value(x):
+    return trampoline(lisp_value_to_py_value_, Frame(x, land, SENTINEL))
+
+
+def lv2pv_setup(frame, args):
+    arg, args = args
+    stack.push(frame.new(x=args))
+    return bounce(lisp_value_to_py_value_, frame.new(x=arg, c=lv2pv_next_arg))
+
+
+def lv2pv_next_arg(value):
+    frame = stack.pop()
+    args = frame.x
+
+    if args is EL:
+        ret = [value]
+        while True:
+            f = stack.pop()
+            if f.x is SENTINEL:
+                break
+            ret.insert(0, f.x)
+        return bounce(frame.c, ret)
+
+    stack.push(frame.new(x=value))
+    return lv2pv_setup(frame, args)
+
+
+def lisp_value_to_py_value_(frame):
+    x = frame.x
+    if x is EL:
+        x = None
+    elif x is T:
+        x = True
+    if not isinstance(x, list):
+        return bounce(frame.c, x)
+
+    stack.push(frame.new(x=SENTINEL))
+    return lv2pv_setup(frame, x)
+
+
+def py_value_to_lisp_value(x):
+    return trampoline(py_value_to_lisp_value_, Frame(x, land, SENTINEL))
+
+
+def pv2lv_setup(frame, args):
+    arg = args.pop(0)
+    stack.push(frame.new(x=args))
+    return bounce(py_value_to_lisp_value_, frame.new(x=arg, c=pv2lv_next_arg))
+
+
+def pv2lv_next_arg(value):
+    frame = stack.pop()
+    args = frame.x
+
+    if not args:
+        ret = [value, EL]
+        while True:
+            f = stack.pop()
+            if f.x is SENTINEL:
+                break
+            ret = [f.x, ret]
+        return bounce(frame.c, ret)
+
+    stack.push(frame.new(x=value))
+    return pv2lv_setup(frame, args)
+
+
+def py_value_to_lisp_value_(frame):
+    x = frame.x
+    if x is None or x is False:
+        x = EL
+    elif x is True:
+        x = T
+    if not isinstance(x, (list, tuple)):
+        return bounce(frame.c, x)
+    if not x:
         return bounce(frame.c, EL)
 
-    return op_cond_setup(frame, args)
+    stack.push(frame.new(x=SENTINEL))
+    return pv2lv_setup(frame, list(x))
 
 
-def op_define_cont(value):
+def ffi_args_done(args):
     frame = stack.pop()
-    sym = frame.x
-    frame.e.set(sym, value)
-    return bounce(frame.c, EL)
+    func = frame.x
 
+    ret = func(args)
 
-@spcl("define")
-def op_define(frame):
-    sym, defn = unpack(frame.x, 2)
-
-    stack.push(frame, x=symcheck(sym))
-    return bounce(leval_, Frame(frame, x=defn, c=op_define_cont))
-
-
-###
-
-
-def op_if_cont(value):
-    frame = stack.pop()
-    ca = frame.x
-    sexpr = ca[1] if value is EL else ca[0]
-    return bounce(leval_, Frame(frame, x=sexpr))
-
-
-@spcl("if")
-def op_if(frame):
-    p, c, a = unpack(frame.x, 3)
-    stack.push(frame, x=[c, a])
-    return bounce(leval_, Frame(frame, x=p, c=op_if_cont))
-
-
-###
-
-
-@spcl("lambda")
-def op_lambda(frame):
-    params, body = unpack(frame.x, 2)
-
-    if not (isinstance(params, list) or params is EL):
-        raise TypeError("expected param list, got {params!r}")
-
-    return bounce(frame.c, Lambda(params, body, frame.e))
-
-
-@spcl("quote")
-def op_quote(frame):
-    (x,) = unpack(frame.x, 1)
-    return bounce(frame.c, x)
-
-
-###
-
-
-def op_setbang_cont(defn):
-    frame = stack.pop()
-    sym = frame.x
-    frame.e.setbang(sym, defn)
-    return bounce(frame.c, EL)
-
-
-@spcl("set!")
-def op_setbang(frame):
-    sym, defn = unpack(frame.x, 2)
-    stack.push(frame, x=symcheck(sym))
-    return bounce(leval_, Frame(frame, x=defn, c=op_setbang_cont))
-
-
-###
-
-
-def op_special_cont(value):
-    frame = stack.pop()
-    sym = frame.x
-    if not isinstance(value, Lambda):
-        raise TypeError(f"expected lambda, got {value!r}")
-    value.special = True
-    frame.e.set(sym, value)
-    return bounce(frame.c, EL)
-
-
-@spcl("special")
-def op_special(frame):
-    sym, defn = unpack(frame.x, 2)
-
-    stack.push(frame, x=symcheck(sym))
-    return bounce(leval_, Frame(frame, x=defn, c=op_special_cont))
-
-
-###
-
-
-@spcl("trap")
-def op_trap(frame):
-    (x,) = unpack(frame.x, 1)
-    ok = T
-    try:
-        ## this has to be recursive because you can't pass
-        ## exceptions across the trampoline. there is a chance
-        ## of blowing the python stack here if you do a deeply
-        ## recursive trap.
-        res = leval(x, frame.e)
-    except:  ## pylint: disable=bare-except
-        ok = EL
-        t, v = sys.exc_info()[:2]
-        res = f"{t.__name__}: {str(v)}"
-    return bounce(frame.c, cons(ok, cons(res, EL)))
+    return bounce(py_value_to_lisp_value_, frame.new(x=ret))
 
 
 ## }}}
 
 
 if __name__ == "__main__":
-    Context().main()
+    main()
 
 
 ## EOF
