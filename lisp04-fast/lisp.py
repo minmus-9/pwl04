@@ -231,12 +231,10 @@ class Stack:
         self.s = [thing, self.s]
 
     def pop(self):
-        ## pylint: disable=unpacking-non-sequence
         ret, self.s = self.s
         return ret
 
     def top(self):
-        ## pylint: disable=unsubscriptable-object
         return self.s[0]
 
     ## for continuations
@@ -249,8 +247,8 @@ class Stack:
 
     ## avoid inheritance for performance:
 
-    def fpush(self, thing, x=None, c=None, e=None):
-        self.s = [Frame(thing, x, c, e), self.s]
+    def fpush(self, frame, x=None, c=None, e=None):
+        self.s = [Frame(frame, x, c, e), self.s]
 
 
 stack = Stack()
