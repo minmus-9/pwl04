@@ -194,7 +194,25 @@ def split(x):
 
 
 ## }}}
-## {{{ stack
+## {{{ stack frame
+
+
+class Frame:
+    ## pylint: disable=too-few-public-methods
+
+    __slots__ = ("x", "c", "e")
+
+    def __init__(self, f, x=None, c=None, e=None):
+        self.x = f.x if x is None else x
+        self.c = f.c if c is None else c
+        self.e = f.e if e is None else e
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.x}, {self.c}, {self.e})"
+
+
+## }}}
+## {{{ stack and global frame stack
 
 
 class Stack:
@@ -229,36 +247,13 @@ class Stack:
     def set(self, value):
         self.s = value
 
+    ## avoid inheritance for performance:
 
-## }}}
-## {{{ stack frame
-
-
-class Frame:
-    ## pylint: disable=too-few-public-methods
-
-    __slots__ = ("x", "c", "e")
-
-    def __init__(self, f, x=None, c=None, e=None):
-        self.x = f.x if x is None else x
-        self.c = f.c if c is None else c
-        self.e = f.e if e is None else e
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.x}, {self.c}, {self.e})"
-
-
-## }}}
-## {{{ frame stack and global frame stack
-
-
-class FrameStack(Stack):
-    def push(self, thing, x=None, c=None, e=None):
-        ## pylint: disable=arguments-differ
+    def fpush(self, thing, x=None, c=None, e=None):
         self.s = [Frame(thing, x, c, e), self.s]
 
 
-stack = FrameStack()
+stack = Stack()
 
 
 ## }}}
@@ -328,7 +323,7 @@ class Environment:
         if args is not EL:
             raise TypeError("too many args")
 
-    def get(self, sym, default):
+    def get(self, sym):
         symcheck(sym)
         e = self
         while e is not SENTINEL:
@@ -336,7 +331,7 @@ class Environment:
             if x is not SENTINEL:
                 return x
             e = e.p
-        return default
+        raise NameError(str(sym))
 
     def set(self, sym, value):
         symcheck(sym)
@@ -745,13 +740,13 @@ class Lambda:
     def lambda_params_done(self, paramstr):
         frame = stack.pop()
         body = frame.x
-        stack.push(frame, x=paramstr)
+        stack.fpush(frame, x=paramstr)
         return bounce(
             stringify_, Frame(frame, x=body, c=self.lambda_body_done)
         )
 
     def stringify_(self, frame):
-        stack.push(frame, x=self.b)
+        stack.fpush(frame, x=self.b)
         return bounce(
             stringify_,
             Frame(frame, x=self.p, c=self.lambda_params_done),
@@ -792,8 +787,8 @@ def stringify_setup(frame, args):
     else:
         arg = args
         args = EL
-        stack.push(Frame(frame, x="."))
-    stack.push(frame, x=args)
+        stack.fpush(Frame(frame, x="."))
+    stack.fpush(frame, x=args)
     return bounce(stringify_, Frame(frame, x=arg, c=stringify_cont))
 
 
@@ -810,7 +805,7 @@ def stringify_cont(value):
             parts.insert(0, f.x)
         return bounce(frame.c, "(" + " ".join(parts) + ")")
 
-    stack.push(frame, x=value)
+    stack.fpush(frame, x=value)
     return stringify_setup(frame, args)
 
 
@@ -834,7 +829,7 @@ def stringify_(frame):
     if not isinstance(x, list):
         return bounce(frame.c, "[opaque]")
 
-    stack.push(frame, x=SENTINEL)
+    stack.fpush(frame, x=SENTINEL)
 
     return stringify_setup(frame, x)
 
@@ -849,12 +844,8 @@ def leval(sexpr, env=SENTINEL):
 
 
 def eval_setup(frame, args):
-    if isinstance(args, list):
-        arg, args = args
-    else:
-        arg = args
-        args = EL
-    stack.push(frame, x=args)
+    arg, args = args
+    stack.fpush(frame, x=args)
     return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
 
 
@@ -879,7 +870,7 @@ def eval_next_arg(value):
             return bounce(do_ffi, Frame(frame, x=[ret, proc]))
         return bounce(proc, Frame(frame, x=ret))
 
-    stack.push(frame, x=value)
+    stack.fpush(frame, x=value)
     return eval_setup(frame, args)
 
 
@@ -900,7 +891,7 @@ def eval_proc_done(proc):
 
     ## evaluate args...
 
-    stack.push(frame, c=proc, x=SENTINEL)  ## NB abuse .c field
+    stack.fpush(frame, c=proc, x=SENTINEL)  ## NB abuse .c field
 
     return eval_setup(frame, args)
 
@@ -910,33 +901,28 @@ def leval_(frame):
 
     x = frame.x
     if isinstance(x, Symbol):
-        obj = frame.e.get(x, SENTINEL)
-        if obj is SENTINEL:
-            raise NameError(x)
+        obj = frame.e.get(x)
         return bounce(frame.c, obj)
     if isinstance(x, list):
-        sym, args = x
+        op, args = x
     elif isinstance(x, Lambda):
-        sym = x
+        op = x
         args = EL
     else:
         return bounce(frame.c, x)
-    if isinstance(sym, Symbol):
-        op = frame.e.get(sym, SENTINEL)
-        if op is SENTINEL:
-            raise NameError(sym)
+    if isinstance(op, Symbol):
+        op = frame.e.get(op)
         if getattr(op, "special", False):
             return bounce(op, Frame(frame, x=args))
-        sym = op
-    if callable(sym):
+    if callable(op):
         ## primitive Lambda Continuation
-        stack.push(frame, x=args)
-        return bounce(eval_proc_done, sym)
-    if not isinstance(sym, list):
+        stack.fpush(frame, x=args)
+        return bounce(eval_proc_done, op)
+    if not isinstance(op, list):
         raise TypeError(f"expected proc or list, got {sym!r}")
 
-    stack.push(frame, x=args)
-    return bounce(leval_, Frame(frame, x=sym, c=eval_proc_done))
+    stack.fpush(frame, x=args)
+    return bounce(leval_, Frame(frame, x=op, c=eval_proc_done))
 
 
 ## }}}
@@ -946,7 +932,7 @@ def leval_(frame):
 def do_ffi(frame):
     af = frame.x
     args, func = af
-    stack.push(frame, x=func)
+    stack.fpush(frame, x=func)
 
     if args is EL:
         return bounce(ffi_args_done, [])
@@ -962,7 +948,7 @@ def lisp_value_to_py_value(x):
 
 def lv2pv_setup(frame, args):
     arg, args = args
-    stack.push(frame, x=args)
+    stack.fpush(frame, x=args)
     return bounce(
         lisp_value_to_py_value_, Frame(frame, x=arg, c=lv2pv_next_arg)
     )
@@ -981,7 +967,7 @@ def lv2pv_next_arg(value):
             ret.insert(0, f.x)
         return bounce(frame.c, ret)
 
-    stack.push(frame, x=value)
+    stack.fpush(frame, x=value)
     return lv2pv_setup(frame, args)
 
 
@@ -994,7 +980,7 @@ def lisp_value_to_py_value_(frame):
     if not isinstance(x, list):
         return bounce(frame.c, x)
 
-    stack.push(frame, x=SENTINEL)
+    stack.fpush(frame, x=SENTINEL)
     return lv2pv_setup(frame, x)
 
 
@@ -1004,7 +990,7 @@ def py_value_to_lisp_value(x):
 
 def pv2lv_setup(frame, args):
     arg = args.pop(0)
-    stack.push(frame, x=args)
+    stack.fpush(frame, x=args)
     return bounce(
         py_value_to_lisp_value_, Frame(frame, x=arg, c=pv2lv_next_arg)
     )
@@ -1023,7 +1009,7 @@ def pv2lv_next_arg(value):
             ret = [f.x, ret]
         return bounce(frame.c, ret)
 
-    stack.push(frame, x=value)
+    stack.fpush(frame, x=value)
     return pv2lv_setup(frame, args)
 
 
@@ -1038,7 +1024,7 @@ def py_value_to_lisp_value_(frame):
     if not x:
         return bounce(frame.c, EL)
 
-    stack.push(frame, x=SENTINEL)
+    stack.fpush(frame, x=SENTINEL)
     return pv2lv_setup(frame, list(x))
 
 
@@ -1120,7 +1106,7 @@ def op_cond_setup(frame, args):
     head, args = args
     predicate, consequent = unpack(head, 2)
 
-    stack.push(frame, x=[args, consequent])
+    stack.fpush(frame, x=[args, consequent])
     return bounce(leval_, Frame(frame, c=op_cond_cont, x=predicate))
 
 
@@ -1154,8 +1140,7 @@ def op_define_cont(value):
 @spcl("define")
 def op_define(frame):
     sym, defn = unpack(frame.x, 2)
-
-    stack.push(frame, x=symcheck(sym))
+    stack.fpush(frame, x=symcheck(sym))
     return bounce(leval_, Frame(frame, x=defn, c=op_define_cont))
 
 
@@ -1172,7 +1157,7 @@ def op_if_cont(value):
 @spcl("if")
 def op_if(frame):
     p, c, a = unpack(frame.x, 3)
-    stack.push(frame, x=[c, a])
+    stack.fpush(frame, x=[c, a])
     return bounce(leval_, Frame(frame, x=p, c=op_if_cont))
 
 
@@ -1208,7 +1193,7 @@ def op_setbang_cont(defn):
 @spcl("set!")
 def op_setbang(frame):
     sym, defn = unpack(frame.x, 2)
-    stack.push(frame, x=symcheck(sym))
+    stack.fpush(frame, x=symcheck(sym))
     return bounce(leval_, Frame(frame, x=defn, c=op_setbang_cont))
 
 
@@ -1229,7 +1214,7 @@ def op_special_cont(value):
 def op_special(frame):
     sym, defn = unpack(frame.x, 2)
 
-    stack.push(frame, x=symcheck(sym))
+    stack.fpush(frame, x=symcheck(sym))
     return bounce(leval_, Frame(frame, x=defn, c=op_special_cont))
 
 
@@ -1261,7 +1246,7 @@ def qq_list_setup(frame, form):
     elt, form = form
     if not (isinstance(form, list) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
-    stack.push(frame, x=form)
+    stack.fpush(frame, x=form)
     return bounce(qq_list_next, Frame(frame, x=elt, c=qq_list_cont))
 
 
@@ -1282,7 +1267,7 @@ def qq_list_cont(value):
     if form is EL:
         return bounce(qq_finish, frame, value)
 
-    stack.push(frame, x=value)
+    stack.fpush(frame, x=value)
 
     return qq_list_setup(frame, form)
 
@@ -1299,9 +1284,9 @@ def qq_spliced(value):
     while value is not EL:
         elt, value = value
         if value is EL:
-            stack.push(frame, x=form)
+            stack.fpush(frame, x=form)
             return bounce(qq_list_cont, elt)
-        stack.push(frame, x=elt)
+        stack.fpush(frame, x=elt)
 
     raise RuntimeError("logs in the bedpan")
 
@@ -1331,7 +1316,7 @@ def qq_list(frame):
         _, x = unpack(form, 2)
         raise LispError("cannot use unquote-splicing here")
 
-    stack.push(frame, x=SENTINEL)
+    stack.fpush(frame, x=SENTINEL)
 
     return qq_list_setup(frame, form)
 
@@ -1552,7 +1537,7 @@ def op_print_cont(value):
 
     arg, args = args
 
-    stack.push(frame, x=args)
+    stack.fpush(frame, x=args)
     return bounce(stringify_, Frame(frame, x=arg, c=op_print_cont))
 
 
@@ -1568,7 +1553,7 @@ def op_print(frame):
 
     arg, args = args
 
-    stack.push(frame, x=args)
+    stack.fpush(frame, x=args)
     return bounce(stringify_, Frame(frame, x=arg, c=op_print_cont))
 
 
@@ -1638,7 +1623,7 @@ def op_while_cont(value):
 
     if value is EL:
         return bounce(frame.c, EL)
-    stack.push(frame)
+    stack.fpush(frame)
     return bounce(leval_, Frame(frame, c=op_while_cont))
 
 
@@ -1648,7 +1633,7 @@ def op_while(frame):
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
 
-    stack.push(frame, x=x)
+    stack.fpush(frame, x=x)
     return bounce(leval_, Frame(frame, x=x, c=op_while_cont))
 
 
