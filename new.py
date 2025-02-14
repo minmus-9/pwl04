@@ -796,6 +796,99 @@ class Context:
         return self.stringify_setup_(frame, x)
 
     ## }}}
+    ## {{{ eval
+
+
+    def leval(self, sexpr, env=SENTINEL):
+        e = self.e if env is SENTINEL else env
+        return trampoline(self.leval_, Frame(sexpr, land, e))
+
+    def eval_setup_(self, frame, args):
+        if isinstance(args, list):
+            arg, args = args
+        else:
+            arg = args
+            args = EL
+        self.s.push(frame.new(x=args))
+        return bounce(self.leval_, frame.new(x=arg, c=self.eval_next_arg_))
+
+    def eval_next_arg_(self, value):
+        stack = self.s
+        frame = stack.pop()
+        args = frame.x
+
+        if args is EL:
+            ret = [value, EL]
+            while True:
+                x = stack.pop()
+                if x is SENTINEL:
+                    proc = stack.pop()
+                    break
+                ret = [x, ret]
+            ## at this point, need to see if proc is ffi
+            if getattr(proc, "ffi", False):
+                ## should construct args as a pylist not pair but then Frame would
+                ## need a new field to hold proc all the way through. this is about
+                ## a global 5% performance hit. i care more about ffi capability
+                ## than performance. plus, this thing is slow enough already.
+                return bounce(self.do_ffi, frame.new(x=[ret, proc]))
+            return bounce(proc, frame.new(x=ret))
+
+        stack.push(frame.new(x=value))
+        return self.eval_setup_(frame, args)
+
+    def eval_proc_done(proc):
+        frame = stack.pop()
+        args = frame.x
+
+        if not callable(proc):  ## python func Lambda Continuation
+            raise TypeError(f"expected callable, got {proc!r}")
+
+        ## specials don't have their args evaluated
+        if getattr(proc, "special", False):
+            return bounce(proc, frame)
+
+        ## shortcut the no-args case
+        if args is EL:
+            return bounce(proc, frame)
+
+        ## evaluate args...
+
+        stack.push(frame, c=proc, x=SENTINEL)  ## NB abuse .c field
+
+        return eval_setup(frame, args)
+
+    def leval_(frame):
+        ## pylint: disable=too-many-locals
+
+        x = frame.x
+        if isinstance(x, Symbol):
+            obj = frame.e.get(x, SENTINEL)
+            if obj is SENTINEL:
+                raise NameError(x)
+            return bounce(frame.c, obj)
+        if isinstance(x, list):
+            sym, args = x
+        elif isinstance(x, Lambda):
+            sym = x
+            args = EL
+        else:
+            return bounce(frame.c, x)
+        if isinstance(sym, Symbol):
+            op = frame.e.get(sym, SENTINEL)
+            if op is not SENTINEL and getattr(op, "special", False):
+                return bounce(op, Frame(frame, x=args))
+        elif callable(sym):
+            ## primitive Lambda Continuation
+            stack.push(frame, x=args)
+            return bounce(eval_proc_done, sym)
+        elif not isinstance(sym, list):
+            raise TypeError(f"expected proc or list, got {sym!r}")
+
+        stack.push(frame, x=args)
+        return bounce(leval_, Frame(frame, x=sym, c=eval_proc_done))
+
+    ## }}}
 
 
 ## }}}
