@@ -216,13 +216,12 @@ class Stack:
 
 
 class Environment:
-    __slots__ = ("c", "d", "p", "nosetbang")
+    __slots__ = ("c", "d", "p")
 
     def __init__(self, ctx, params, args, parent):
         self.c = ctx
         self.d = {}
         self.p = parent
-        self.nosetbang = False
         self.bind(params, args)
 
     def bind(self, params, args):
@@ -251,11 +250,14 @@ class Environment:
         symbolcheck(key)
         e = self
         while e is not SENTINEL:
-            x = e.d.get(key, SENTINEL)
+            x = e.get_(key)
             if x is not SENTINEL:
                 return x
             e = e.p
         return default
+
+    def get_(self, key):
+        return self.d.get(key, SENTINEL)
 
     def set(self, key, value):
         self.d[symbolcheck(key)] = value
@@ -264,7 +266,7 @@ class Environment:
         symbolcheck(key)
         e = self
         while e is not SENTINEL:
-            if (not e.nosetbang) and key in e.d:
+            if key in e.d:
                 e.d[key] = value
                 return
             e = e.p
@@ -622,9 +624,40 @@ class Continuation:
 ## {{{ primitive definition decorators
 
 
+class Nope_:
+    def __contains__(self, key):
+        return False
+
+
+NOPE_ = Nope_()
+
+
+class Global:
+    __slots__ = ("d", "p", "t")
+
+    def __init__(self):
+        self.d = NOPE  ## bait for Environment.setbang()
+        self.p = SENTINEL
+        self.t = {}
+
+    def get_(self, key):
+        return self.t.get(str(key), SENTINEL)
+
+    @staticmethod
+    def set(key, value):
+        raise RuntimeError("access denied.")
+
+    @staticmethod
+    def setbang(key, value):
+        raise RuntimeError("access denied.")
+
+
+GENV_ = Global()
+
+
 def glbl(name):
     def wrap(func):
-        genv.set(symbol(name), func)
+        GENV_.t[name] = func
         return func
 
     return wrap
@@ -632,7 +665,7 @@ def glbl(name):
 
 def spcl(name):
     def wrap(func):
-        genv.set(symbol(name), func)
+        GENV_.t[name] = func
         func.special = True
         return func
 
@@ -641,7 +674,7 @@ def spcl(name):
 
 def ffi(name):
     def wrap(func):
-        genv.set(symbol(name), func)
+        GENV_.t[name] = func
         func.ffi = True
         return func
 
@@ -660,9 +693,7 @@ class Context:
     def __init__(self):
         self.t_ = {}
         self.s = Stack()
-        self.e = self.new_environment(
-            [self.symbol("#t"), EL], [T, EL], SENTINEL
-        )
+        self.e = self.new_environment([self.symbol("#t"), EL], [T, EL], GENV_)
 
     ## {{{ factories
 
@@ -1038,6 +1069,147 @@ class Context:
 
 
 ## }}}
+
+
+## }}}
+## {{{ special forms
+
+
+def op_cond_setup(frame, args):
+    head, args = args
+    predicate, consequent = unpack(head, 2)
+
+    stack.push(frame, x=[args, consequent])
+    return bounce(leval_, Frame(frame, c=op_cond_cont, x=predicate))
+
+
+def op_cond_cont(value):
+    frame = stack.pop()
+    args, consequent = frame.x
+
+    if value is not EL:
+        return bounce(leval_, Frame(frame, x=consequent))
+    if args is EL:
+        return bounce(frame.c, EL)
+    return op_cond_setup(frame, args)
+
+
+@spcl("cond")
+def op_cond(frame):
+    args = frame.x
+    if args is EL:
+        return bounce(frame.c, EL)
+
+    return op_cond_setup(frame, args)
+
+
+def op_define_cont(value):
+    frame = stack.pop()
+    sym = frame.x
+    frame.e.set(sym, value)
+    return bounce(frame.c, EL)
+
+
+@spcl("define")
+def op_define(frame):
+    sym, defn = unpack(frame.x, 2)
+
+    stack.push(frame, x=symcheck(sym))
+    return bounce(leval_, Frame(frame, x=defn, c=op_define_cont))
+
+
+###
+
+
+def op_if_cont(value):
+    frame = stack.pop()
+    ca = frame.x
+    sexpr = ca[1] if value is EL else ca[0]
+    return bounce(leval_, Frame(frame, x=sexpr))
+
+
+@spcl("if")
+def op_if(frame):
+    p, c, a = unpack(frame.x, 3)
+    stack.push(frame, x=[c, a])
+    return bounce(leval_, Frame(frame, x=p, c=op_if_cont))
+
+
+###
+
+
+@spcl("lambda")
+def op_lambda(frame):
+    params, body = unpack(frame.x, 2)
+
+    if not (isinstance(params, list) or params is EL):
+        raise TypeError("expected param list, got {params!r}")
+
+    return bounce(frame.c, Lambda(params, body, frame.e))
+
+
+@spcl("quote")
+def op_quote(frame):
+    (x,) = unpack(frame.x, 1)
+    return bounce(frame.c, x)
+
+
+###
+
+
+def op_setbang_cont(defn):
+    frame = stack.pop()
+    sym = frame.x
+    frame.e.setbang(sym, defn)
+    return bounce(frame.c, EL)
+
+
+@spcl("set!")
+def op_setbang(frame):
+    sym, defn = unpack(frame.x, 2)
+    stack.push(frame, x=symcheck(sym))
+    return bounce(leval_, Frame(frame, x=defn, c=op_setbang_cont))
+
+
+###
+
+
+def op_special_cont(value):
+    frame = stack.pop()
+    sym = frame.x
+    if not isinstance(value, Lambda):
+        raise TypeError(f"expected lambda, got {value!r}")
+    value.special = True
+    frame.e.set(sym, value)
+    return bounce(frame.c, EL)
+
+
+@spcl("special")
+def op_special(frame):
+    sym, defn = unpack(frame.x, 2)
+
+    stack.push(frame, x=symcheck(sym))
+    return bounce(leval_, Frame(frame, x=defn, c=op_special_cont))
+
+
+###
+
+
+@spcl("trap")
+def op_trap(frame):
+    (x,) = unpack(frame.x, 1)
+    ok = T
+    try:
+        ## this has to be recursive because you can't pass
+        ## exceptions across the trampoline. there is a chance
+        ## of blowing the python stack here if you do a deeply
+        ## recursive trap.
+        res = leval(x, frame.e)
+    except:  ## pylint: disable=bare-except
+        ok = EL
+        t, v = sys.exc_info()[:2]
+        res = f"{t.__name__}: {str(v)}"
+    return bounce(frame.c, cons(ok, cons(res, EL)))
 
 
 ## }}}
