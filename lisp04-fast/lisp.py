@@ -18,9 +18,7 @@
 ## along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 """
-fast.py -- this is lisp04-trampolined-fancy/lisp.py where all data
-structures are based on pairs. it is s.l.o.w. unless TURBO > 0.
-all internal pair ops have been inlined for speed.
+lisp.py -- faster than lisp04-trampolined-fancy
 """
 
 
@@ -59,20 +57,13 @@ __all__ = (
     "set_car",
     "set_cdr",
     "spcl",
-    "splitcar",
+    "split",
     "stack",
     "symbol",
 )
 
 
 ## }}}
-
-
-TURBO = 0  ## as-is
-TURBO = 1  ## break stack encapsulation in FrameStack (5% speedup)
-# TURBO = 2  ## use python dict for keyed tables (~30% speedup)
-
-
 ## {{{ trampoline
 
 
@@ -114,35 +105,16 @@ SENTINEL = object()
 ## {{{ atoms
 
 
-class EL_:
-    ## pylint: disable=too-few-public-methods
-
-    def __repr__(self):
-        return "()"
-
-
-EL = EL_()
-del EL_
-
-
-class T_:
-    ## pylint: disable=too-few-public-methods
-
-    def __repr__(self):
-        return "#t"
-
-
-T = T_()
-del T_
+EL = object()
+T = True
 
 
 class Symbol:
     ## pylint: disable=too-few-public-methods
 
-    __slots__ = ["s"]
+    __slots__ = ("s",)
 
     def __init__(self, s):
-        assert type(s) is str and s  ## pylint: disable=unidiomatic-typecheck
         self.s = s
 
     def __str__(self):
@@ -160,9 +132,31 @@ def eq(x, y):
 
 
 def symcheck(x):
-    if not isinstance(x, Symbol):
-        raise TypeError(f"expected symbol, got {x!r}")
-    return x
+    if isinstance(x, Symbol):
+        return x
+    raise TypeError(f"expected symbol, got {x!r}")
+
+
+## }}}
+## {{{ symbol table
+
+
+class SymbolTable:
+    ## pylint: disable=too-few-public-methods
+
+    __slots__ = ("t",)
+
+    def __init__(self):
+        self.t = {}
+
+    def symbol(self, s):
+        assert type(s) is str and s  ## pylint: disable=unidiomatic-typecheck
+        if s not in self.t:
+            self.t[s] = Symbol(s)
+        return self.t[s]
+
+
+symbol = SymbolTable().symbol
 
 
 ## }}}
@@ -195,149 +189,8 @@ def set_cdr(x, y):
     return EL
 
 
-def splitcar(x):
+def split(x):
     return x
-
-
-## }}}
-## {{{ key-value table
-
-
-class Table:
-    __slots__ = ["t"]
-
-    def __init__(self, compare):
-        self.t = [EL, compare]
-
-    def __bool__(self):
-        return self.t[0] is not EL
-
-    def find(self, key):
-        ## pylint: disable=unsupported-assignment-operation
-        ## pylint: disable=unsubscriptable-object
-        link, cmp = t = self.t
-        prev = SENTINEL
-        while link is not EL:
-            node = link[0]
-            if cmp(key, node[0]):
-                if prev is not SENTINEL:
-                    prev[1] = link[1]
-                    link[1] = t[0]
-                    t[0] = link
-                return node
-            prev = link
-            link = link[1]
-        return SENTINEL
-
-    def clear(self):
-        self.t[0] = EL
-
-    def get(self, key, default):
-        node = self.find(key)
-        return default if node is SENTINEL else node[1]
-
-    def set(self, key, value):
-        node = self.find(key)
-        if node is SENTINEL:
-            node = [key, value]
-            self.t[0] = [node, self.t[0]]
-        else:
-            node[1] = value
-        return EL
-
-    def setbang(self, key, value):
-        node = self.find(key)
-        if node is SENTINEL:
-            return False
-        node[1] = value
-        return True
-
-    def setdefault_func(self, key, func):
-        node = self.find(key)
-        if node is SENTINEL:
-            value = func(key)
-            node = [key, value]
-            self.t[0] = [node, self.t[0]]
-            return value
-        return node[1]
-
-
-if TURBO > 1:
-
-    class Table(dict):  ## pylint: disable=function-redefined
-        def __init__(self, _):
-            dict.__init__(self)
-
-        def set(self, key, value):
-            self[key] = value
-
-        def setbang(self, key, value):
-            if key in self:
-                self[key] = value
-                return True
-            return False
-
-        def setdefault_func(self, key, func):
-            value = self.setdefault(key, SENTINEL)
-            if value is SENTINEL:
-                value = func(key)
-                self[key] = value
-            return value
-
-
-## }}}
-## {{{ string-keyed table
-
-
-class StringKeyedTable(Table):
-    def __init__(self):
-        Table.__init__(self, self.string_compare)
-
-    @staticmethod
-    def string_compare(x, y):
-        return x == y
-
-    def find(self, key):
-        if not (
-            type(key) is str and key  ## pylint: disable=unidiomatic-typecheck
-        ):
-            raise TypeError(f"expected string, got {key!r}")
-        return Table.find(self, key)
-
-
-## }}}
-## {{{ symbol-keyed table
-
-
-class SymbolKeyedTable(Table):
-    def __init__(self):
-        Table.__init__(self, self.symbol_compare)
-
-    @staticmethod
-    def symbol_compare(x, y):
-        return x is y
-
-    def find(self, key):
-        return Table.find(self, symcheck(key))
-
-
-## }}}
-## {{{ global symbol table
-
-
-class SymbolTable:
-    ## pylint: disable=too-few-public-methods
-
-    __slots__ = ["t"]
-
-    def __init__(self):
-        self.t = StringKeyedTable()
-
-    def symbol(self, s):
-        return self.t.setdefault_func(s, Symbol)
-
-
-symbol = SymbolTable().symbol
 
 
 ## }}}
@@ -345,38 +198,36 @@ symbol = SymbolTable().symbol
 
 
 class Stack:
-    __slots__ = ["s"]
+    __slots__ = ("s",)
 
     def __init__(self):
-        self.s = [EL, EL]
+        self.s = EL
 
     def __bool__(self):
-        return self.s[0] is not EL
+        return self.s is not EL
 
     def clear(self):
-        self.s = [EL, EL]
+        self.s = EL
 
     def push(self, thing):
-        self.s[0] = [thing, self.s[0]]
-
-    append = push
+        self.s = [thing, self.s]
 
     def pop(self):
         ## pylint: disable=unpacking-non-sequence
-        ret, self.s[0] = self.s[0]
+        ret, self.s = self.s
         return ret
 
     def top(self):
         ## pylint: disable=unsubscriptable-object
-        return self.s[0][0]
+        return self.s[0]
 
     ## for continuations
 
     def get(self):
-        return self.s[0]
+        return self.s
 
     def set(self, value):
-        self.s[0] = value
+        self.s = value
 
 
 ## }}}
@@ -386,7 +237,7 @@ class Stack:
 class Frame:
     ## pylint: disable=too-few-public-methods
 
-    __slots__ = ["x", "c", "e"]
+    __slots__ = ("x", "c", "e")
 
     def __init__(self, f, x=None, c=None, e=None):
         self.x = f.x if x is None else x
@@ -402,17 +253,9 @@ class Frame:
 
 
 class FrameStack(Stack):
-    if TURBO > 0:
-
-        def push(self, thing, x=None, c=None, e=None):
-            ## pylint: disable=arguments-differ
-            self.s[0] = [Frame(thing, x, c, e), self.s[0]]
-
-    else:
-
-        def push(self, thing, x=None, c=None, e=None):
-            ## pylint: disable=arguments-differ
-            Stack.push(self, Frame(thing, x, c, e))
+    def push(self, thing, x=None, c=None, e=None):
+        ## pylint: disable=arguments-differ
+        self.s = [Frame(thing, x, c, e), self.s]
 
 
 stack = FrameStack()
@@ -423,37 +266,30 @@ stack = FrameStack()
 
 
 class Queue:
-    __slots__ = ["q"]
+    __slots__ = ("h", "t")
 
     def __init__(self):
-        self.q = [EL, EL]
+        self.h = self.t = EL
 
     def __bool__(self):
-        return self.q[0] is not EL
+        return self.h is not EL
 
     def head(self):
-        return self.q[0]
+        return self.h
 
     def enqueue(self, x):
-        ## pylint: disable=unsupported-assignment-operation
         node = [x, EL]
-        if self.q[0] is EL:
-            self.q[0] = node
+        if self.h is EL:
+            self.h = node
         else:
-            self.q[1][1] = node
-        self.q[1] = node
-
-    append = enqueue
+            self.t[1] = node
+        self.t = node
 
     def dequeue(self):
-        ## pylint: disable=unsubscriptable-object
-        node = self.q[0]
-        if node is EL:
-            raise ValueError("queue is empty")
-        h = node[1]
-        self.q[0] = h
-        if h is EL:
-            self.q[1] = EL
+        node = self.h
+        self.h = node[1]
+        if self.h is EL:
+            self.t = EL
         return node[0]
 
 
@@ -462,58 +298,63 @@ class Queue:
 
 
 class Environment:
-    __slots__ = ["e"]
+    __slots__ = ("d", "p")
 
     def __init__(self, params, args, parent):
-        self.e = [SymbolKeyedTable(), parent]
-        self.bind(self.e[0], params, args)
+        self.p = parent
+        self.d = {}
+        self.bind(self.d, params, args)
 
     @staticmethod
     def bind(d, params, args):
-        pl, al = params, args
+        v = symbol("&")
         variadic = False
         while params is not EL:
             p, params = params
-            if eq(p, symbol("&")):
+            if eq(symcheck(p), v):
                 variadic = True
             elif variadic:
                 if params is not EL:
-                    raise SyntaxError(f"extra junk {params!r} after '&'")
-                d.set(p, args)
+                    raise SyntaxError("extra junk after '&'")
+                d[p] = args
                 return
             elif args is EL:
-                raise TypeError(f"not enough args at {pl!r} <= {al!r}")
+                raise TypeError("not enough args")
             else:
-                d.set(p, args[0])
+                d[p] = args[0]
                 args = args[1]
         if variadic:
-            raise SyntaxError(f"'&' ends param list {pl!r} <= {al!r}")
+            raise SyntaxError("'&' ends param list")
         if args is not EL:
-            raise TypeError(f"too many args at {pl!r} <= {al!r}")
+            raise TypeError("too many args")
 
     def get(self, sym, default):
+        symcheck(sym)
         e = self
         while e is not SENTINEL:
-            x = e.e[0].get(sym, SENTINEL)
+            x = e.d.get(sym, SENTINEL)
             if x is not SENTINEL:
                 return x
-            e = e.e[1]
+            e = e.p
         return default
 
     def set(self, sym, value):
-        self.e[0].set(sym, value)
+        symcheck(sym)
+        self.d[sym] = value
         return EL
 
     def setbang(self, sym, value):
+        symcheck(sym)
         e = self
         while e is not SENTINEL:
-            if e.e[0].setbang(sym, value):
+            if sym in e.d:
+                e.d[sym] = value
                 return EL
-            e = e.e[1]
+            e = e.p
         raise NameError(str(sym))
 
     def up(self):  ## for op_eval()
-        return self.e[1]
+        return self.p
 
 
 genv = Environment(EL, EL, SENTINEL)
@@ -603,7 +444,7 @@ class Scanner:
             return self.c_comma(ch)
         if ch == "`":
             return self.c_backtick(ch)
-        self.token.append(ch)
+        self.token.enqueue(ch)
         return self.k_sym
 
     def k_comment(self, ch):
@@ -615,7 +456,7 @@ class Scanner:
         if ch == '"':
             self.push(self.T_STRING)
             return self.k_sym
-        self.token.append(ch)
+        self.token.enqueue(ch)
         return self.k_quote
 
     ESC = {
@@ -630,12 +471,12 @@ class Scanner:
         c = self.ESC.get(ch)
         if c is None:
             raise SyntaxError(f"bad escape {ch!r}")
-        self.token.append(c)
+        self.token.enqueue(c)
         return self.k_quote
 
     def k_comma(self, ch):
         if ch == "@":
-            self.token.append("@")
+            self.token.enqueue("@")
             self.push(self.T_COMMA_AT)
         else:
             self.pos -= 1
@@ -654,25 +495,25 @@ class Scanner:
     def c_comma(self, ch):
         if self.token:
             raise SyntaxError(f"{ch!r} not a delimiter")
-        self.token.append(",")
+        self.token.enqueue(",")
         return self.k_comma
 
     def c_tick(self, ch):
         if self.token:
             raise SyntaxError(f"{ch!r} not a delimiter")
-        self.token.append(ch)
+        self.token.enqueue(ch)
         self.push(self.T_TICK)
         return self.k_sym
 
     def c_backtick(self, ch):
         if self.token:
             raise SyntaxError(f"{ch!r} not a delimiter")
-        self.token.append(ch)
+        self.token.enqueue(ch)
         self.push(self.T_BACKTICK)
         return self.k_sym
 
     def c_lpar(self, _):
-        self.parens.append(")")
+        self.parens.push(")")
         self.push(self.T_SYM)
         self.push(self.T_LPAR)
         return self.k_sym
@@ -687,7 +528,7 @@ class Scanner:
         return self.k_sym
 
     def c_lbrack(self, _):
-        self.parens.append("]")
+        self.parens.push("]")
         self.push(self.T_SYM)
         self.push(self.T_LPAR)
         return self.k_sym
@@ -722,8 +563,8 @@ class Parser:
         self.add(symbol(token))
 
     def t_lpar(self, _):
-        self.qstack.append(")")
-        self.stack.append(Queue())
+        self.qstack.push(")")
+        self.stack.push(Queue())
 
     def t_rpar(self, _):
         assert self.stack  ## Scanner checks this
@@ -776,7 +617,7 @@ class Parser:
         else:
             assert s == "`"
             s = symbol("quasiquote")
-        self.qstack.append(s)
+        self.qstack.push(s)
 
 
 ## }}}
@@ -879,17 +720,19 @@ def main(force_repl=False):
 
 
 class Lambda:
-    __slots__ = ["l", "special"]
+    __slots__ = ("p", "b", "e", "special")
 
     def __init__(self, params, body, env):
-        self.l = [params, [body, env]]
+        self.p = params
+        self.b = body
+        self.e = env
         self.special = False
 
     def __call__(self, frame):
         args = frame.x
-        p = frame.e if self.special else self.l[1][1]
-        e = Environment(self.l[0], args, p)
-        return bounce(leval_, Frame(frame, x=self.l[1][0], e=e))
+        p = frame.e if self.special else self.e
+        e = Environment(self.p, args, p)
+        return bounce(leval_, Frame(frame, x=self.b, e=e))
 
     ###
 
@@ -908,10 +751,10 @@ class Lambda:
         )
 
     def stringify_(self, frame):
-        stack.push(frame, x=self.l[1][0])
+        stack.push(frame, x=self.b)
         return bounce(
             stringify_,
-            Frame(frame, x=self.l[0], c=self.lambda_params_done),
+            Frame(frame, x=self.p, c=self.lambda_params_done),
         )
 
 
@@ -922,15 +765,16 @@ class Lambda:
 class Continuation:
     ## pylint: disable=too-few-public-methods
 
-    __slots__ = ["c"]
+    __slots__ = ("c", "s")
 
     def __init__(self, continuation):
-        self.c = [continuation, stack.get()]
+        self.c = continuation
+        self.s = stack.get()
 
     def __call__(self, frame):
         (x,) = unpack(frame.x, 1)
-        stack.set(self.c[1])
-        return bounce(self.c[0], x)  ## that's it.
+        stack.set(self.s)
+        return bounce(self.c, x)  ## that's it.
 
 
 ## }}}
@@ -1079,13 +923,16 @@ def leval_(frame):
         return bounce(frame.c, x)
     if isinstance(sym, Symbol):
         op = frame.e.get(sym, SENTINEL)
-        if op is not SENTINEL and getattr(op, "special", False):
+        if op is SENTINEL:
+            raise NameError(sym)
+        if getattr(op, "special", False):
             return bounce(op, Frame(frame, x=args))
-    elif callable(sym):
+        sym = op
+    if callable(sym):
         ## primitive Lambda Continuation
         stack.push(frame, x=args)
         return bounce(eval_proc_done, sym)
-    elif not isinstance(sym, list):
+    if not isinstance(sym, list):
         raise TypeError(f"expected proc or list, got {sym!r}")
 
     stack.push(frame, x=args)
@@ -1156,8 +1003,7 @@ def py_value_to_lisp_value(x):
 
 
 def pv2lv_setup(frame, args):
-    arg = args[0]
-    del args[0]
+    arg = args.pop(0)
     stack.push(frame, x=args)
     return bounce(
         py_value_to_lisp_value_, Frame(frame, x=arg, c=pv2lv_next_arg)
