@@ -842,6 +842,8 @@ def leval(sexpr, env=SENTINEL):
 
 
 def eval_setup(frame, args):
+    if not isinstance(args, list):
+        raise SyntaxError("args must be a proper list")
     arg, args = args
     stack.fpush(frame, x=args)
     return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))

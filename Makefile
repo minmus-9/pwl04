@@ -34,6 +34,9 @@ all:	sicp bench factorial
 prof:
 	$(PROF) examples/sicp.lisp examples/bench.lisp
 
+sprof:
+	$(PROF) examples/sicp.lisp examples/bench.lisp examples/factorial.lisp
+
 run:
 	$(LISP) -
 
