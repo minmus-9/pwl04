@@ -2,7 +2,7 @@
 
 "new.py"
 
-## pylint: disable=invalid-name,unbalanced-tuple-unpacking
+## pylint: disable=invalid-name,unbalanced-tuple-unpacking,too-many-lines
 ## XXX pylint: disable=missing-docstring
 
 import locale
@@ -216,12 +216,13 @@ class Stack:
 
 
 class Environment:
-    __slots__ = ("c", "d", "p")
+    __slots__ = ("c", "d", "p", "nosetbang")
 
     def __init__(self, ctx, params, args, parent):
         self.c = ctx
         self.d = {}
         self.p = parent
+        self.nosetbang = False
         self.bind(params, args)
 
     def bind(self, params, args):
@@ -263,7 +264,7 @@ class Environment:
         symbolcheck(key)
         e = self
         while e is not SENTINEL:
-            if key in e.d:
+            if (not e.nosetbang) and key in e.d:
                 e.d[key] = value
                 return
             e = e.p
@@ -618,10 +619,42 @@ class Continuation:
 
 
 ## }}}
+## {{{ primitive definition decorators
+
+
+def glbl(name):
+    def wrap(func):
+        genv.set(symbol(name), func)
+        return func
+
+    return wrap
+
+
+def spcl(name):
+    def wrap(func):
+        genv.set(symbol(name), func)
+        func.special = True
+        return func
+
+    return wrap
+
+
+def ffi(name):
+    def wrap(func):
+        genv.set(symbol(name), func)
+        func.ffi = True
+        return func
+
+    return wrap
+
+
+## }}}
 ## {{{ context
 
 
 class Context:
+    ## pylint: disable=too-many-public-methods
+
     __slots__ = ("s", "e", "t_")
 
     def __init__(self):
@@ -798,7 +831,6 @@ class Context:
     ## }}}
     ## {{{ eval
 
-
     def leval(self, sexpr, env=SENTINEL):
         e = self.e if env is SENTINEL else env
         return trampoline(self.leval_, Frame(sexpr, land, e))
@@ -837,7 +869,8 @@ class Context:
         stack.push(frame.new(x=value))
         return self.eval_setup_(frame, args)
 
-    def eval_proc_done(proc):
+    def eval_proc_done_(self, proc):
+        stack = self.s
         frame = stack.pop()
         args = frame.x
 
@@ -854,13 +887,15 @@ class Context:
 
         ## evaluate args...
 
-        stack.push(frame, c=proc, x=SENTINEL)  ## NB abuse .c field
+        stack.push(proc)
+        stack.push(SENTINEL)
 
-        return eval_setup(frame, args)
+        return self.eval_setup_(frame, args)
 
-    def leval_(frame):
+    def leval_(self, frame):
         ## pylint: disable=too-many-locals
 
+        stack = self.s
         x = frame.x
         if isinstance(x, Symbol):
             obj = frame.e.get(x, SENTINEL)
@@ -876,19 +911,133 @@ class Context:
             return bounce(frame.c, x)
         if isinstance(sym, Symbol):
             op = frame.e.get(sym, SENTINEL)
-            if op is not SENTINEL and getattr(op, "special", False):
-                return bounce(op, Frame(frame, x=args))
+            if op is SENTINEL:
+                raise NameError(sym)
+            if getattr(op, "special", False):
+                return bounce(op, frame.new(x=args))
+            sym = op
         elif callable(sym):
             ## primitive Lambda Continuation
-            stack.push(frame, x=args)
-            return bounce(eval_proc_done, sym)
+            stack.push(frame.new(x=args))
+            return bounce(self.eval_proc_done_, sym)
         elif not isinstance(sym, list):
             raise TypeError(f"expected proc or list, got {sym!r}")
 
-        stack.push(frame, x=args)
-        return bounce(leval_, Frame(frame, x=sym, c=eval_proc_done))
+        stack.push(frame.new(x=args))
+        return bounce(self.leval_, frame.new(x=sym, c=self.eval_proc_done_))
 
     ## }}}
+    ## {{{ ffi
+
+    def do_ffi(self, frame):
+        af = frame.x
+        args, func = af
+        self.s.push(frame.new(x=func))
+
+        if args is EL:
+            return bounce(self.ffi_args_done_, [])
+
+        return bounce(
+            self.lisp_value_to_py_value_,
+            frame.new(x=args, c=self.ffi_args_done_),
+        )
+
+    def lisp_value_to_py_value(self, x):
+        return trampoline(
+            self.lisp_value_to_py_value_, Frame(x, land, SENTINEL)
+        )
+
+    def lv2pv_setup_(self, frame, args):
+        arg, args = args
+        self.s.push(frame.new(x=args))
+        return bounce(
+            self.lisp_value_to_py_value_,
+            frame.new(x=arg, c=self.lv2pv_next_arg_),
+        )
+
+    def lv2pv_next_arg_(self, value):
+        stack = self.s
+        frame = stack.pop()
+        args = frame.x
+
+        if args is EL:
+            ret = [value]
+            while True:
+                x = stack.pop()
+                if x is SENTINEL:
+                    break
+                ret.insert(0, x)
+            return bounce(frame.c, ret)
+
+        stack.push(frame.new(x=value))
+        return self.lv2pv_setup_(frame, args)
+
+    def lisp_value_to_py_value_(self, frame):
+        x = frame.x
+        if x is EL:
+            x = None
+        elif x is T:
+            x = True
+        if not isinstance(x, list):
+            return bounce(frame.c, x)
+
+        self.s.push(frame.new(x=SENTINEL))
+        return self.lv2pv_setup_(frame, x)
+
+    def py_value_to_lisp_value(self, x):
+        return trampoline(
+            self.py_value_to_lisp_value_, Frame(x, land, SENTINEL)
+        )
+
+    def pv2lv_setup_(self, frame, args):
+        arg = args.pop(0)
+        self.s.push(frame.new(x=args))
+        return bounce(
+            self.py_value_to_lisp_value_,
+            frame.new(x=arg, c=self.pv2lv_next_arg_),
+        )
+
+    def pv2lv_next_arg_(self, value):
+        stack = self.s
+        frame = stack.pop()
+        args = frame.x
+
+        if not args:
+            ret = [value, EL]
+            while True:
+                x = stack.pop()
+                if x is SENTINEL:
+                    break
+                ret = [x, ret]
+            return bounce(frame.c, ret)
+
+        stack.push(value)
+        return self.pv2lv_setup_(frame, args)
+
+    def py_value_to_lisp_value_(self, frame):
+        x = frame.x
+        if x is None or x is False:
+            x = EL
+        elif x is True:
+            x = T
+        if not isinstance(x, (list, tuple)):
+            return bounce(frame.c, x)
+        if not x:
+            return bounce(frame.c, EL)
+
+        self.s.push(SENTINEL)
+        return self.pv2lv_setup_(frame, list(x))
+
+    def ffi_args_done_(self, args):
+        frame = self.s.pop()
+        func = frame.x
+
+        ret = func(args)
+
+        return bounce(self.py_value_to_lisp_value_, frame.new(x=ret))
+
+
+## }}}
 
 
 ## }}}
