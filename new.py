@@ -280,7 +280,7 @@ class Environment:
         symbolcheck(key)
         e = self
         while e is not SENTINEL:
-            x = e.d.get(key)
+            x = e.d.get(key, SENTINEL)
             if x is not SENTINEL:
                 return x
             e = e.p
@@ -896,7 +896,7 @@ def eval_proc_done(proc):
 
     ## evaluate args...
 
-    stack.push(frame.new(c=proc, x=SENTINEL))  ## NB abuse .c field
+    stack.push(frame.new(x=SENTINEL, c=proc))  ## NB abuse .c field
 
     return eval_setup(frame, args)
 
