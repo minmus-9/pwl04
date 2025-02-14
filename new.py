@@ -264,7 +264,6 @@ class Environment:
             if eq(symbolcheck(p), v):
                 variadic = True
             elif variadic:
-                p, params = params
                 if params is not EL:
                     raise SyntaxError("extra junk after '&'")
                 d[p] = args
@@ -317,7 +316,7 @@ stack = Stack()
 
 def glbl(name):
     def wrap(func):
-        genv.set(name, func)
+        genv.set(symbol(name), func)
         return func
 
     return wrap
@@ -325,7 +324,7 @@ def glbl(name):
 
 def spcl(name):
     def wrap(func):
-        genv.set(name, func)
+        genv.set(symbol(name), func)
         func.special = True
         return func
 
@@ -334,7 +333,7 @@ def spcl(name):
 
 def ffi(name):
     def wrap(func):
-        genv.set(name, func)
+        genv.set(symbol(name), func)
         func.ffi = True
         return func
 
@@ -355,11 +354,11 @@ class Frame:
         self.c = c
         self.e = e
 
-    def new(self, x=None, c=None, e=None):
+    def new(self, x=SENTINEL, c=SENTINEL, e=SENTINEL):
         return Frame(
-            self.x if x is None else x,
-            self.c if c is None else c,
-            self.e if e is None else e,
+            self.x if x is SENTINEL else x,
+            self.c if c is SENTINEL else c,
+            self.e if e is SENTINEL else e,
         )
 
 
@@ -837,7 +836,7 @@ def stringify_(frame):
 
 
 ## }}}
-## {{{ eval
+## {{{ leval
 
 
 def leval(sexpr, env=SENTINEL):
@@ -1040,6 +1039,1285 @@ def ffi_args_done(args):
     ret = func(args)
 
     return bounce(py_value_to_lisp_value_, frame.new(x=ret))
+
+
+## }}}
+## {{{ special forms
+
+
+def op_cond_setup(frame, args):
+    head, args = args
+    predicate, consequent = unpack(head, 2)
+
+    stack.push(frame.new(x=[args, consequent]))
+    return bounce(leval_, frame.new(x=predicate, c=op_cond_cont))
+
+
+def op_cond_cont(value):
+    frame = stack.pop()
+    args, consequent = frame.x
+
+    if value is not EL:
+        return bounce(leval_, frame.new(x=consequent))
+    if args is EL:
+        return bounce(frame.c, EL)
+    return op_cond_setup(frame, args)
+
+
+@spcl("cond")
+def op_cond(frame):
+    args = frame.x
+    if args is EL:
+        return bounce(frame.c, EL)
+
+    return op_cond_setup(frame, args)
+
+
+def op_define_cont(value):
+    frame = stack.pop()
+    sym = frame.x
+    frame.e.set(sym, value)
+    return bounce(frame.c, EL)
+
+
+@spcl("define")
+def op_define(frame):
+    sym, defn = unpack(frame.x, 2)
+
+    stack.push(frame.new(x=symbolcheck(sym)))
+    return bounce(leval_, frame.new(x=defn, c=op_define_cont))
+
+
+###
+
+
+def op_if_cont(value):
+    frame = stack.pop()
+    ca = frame.x
+    sexpr = ca[1] if value is EL else ca[0]
+    return bounce(leval_, frame.new(x=sexpr))
+
+
+@spcl("if")
+def op_if(frame):
+    p, c, a = unpack(frame.x, 3)
+    stack.push(frame.new(x=[c, a]))
+    return bounce(leval_, frame.new(x=p, c=op_if_cont))
+
+
+###
+
+
+@spcl("lambda")
+def op_lambda(frame):
+    params, body = unpack(frame.x, 2)
+
+    if not (isinstance(params, list) or params is EL):
+        raise TypeError(f"expected param list, got {params!r}")
+
+    return bounce(frame.c, Lambda(params, body, frame.e))
+
+
+@spcl("quote")
+def op_quote(frame):
+    (x,) = unpack(frame.x, 1)
+    return bounce(frame.c, x)
+
+
+###
+
+
+def op_setbang_cont(defn):
+    frame = stack.pop()
+    sym = frame.x
+    frame.e.setbang(sym, defn)
+    return bounce(frame.c, EL)
+
+
+@spcl("set!")
+def op_setbang(frame):
+    sym, defn = unpack(frame.x, 2)
+    stack.push(frame.new(x=symbolcheck(sym)))
+    return bounce(leval_, frame.new(x=defn, c=op_setbang_cont))
+
+
+###
+
+
+def op_special_cont(value):
+    frame = stack.pop()
+    sym = frame.x
+    if not isinstance(value, Lambda):
+        raise TypeError(f"expected lambda, got {value!r}")
+    value.special = True
+    frame.e.set(sym, value)
+    return bounce(frame.c, EL)
+
+
+@spcl("special")
+def op_special(frame):
+    sym, defn = unpack(frame.x, 2)
+
+    stack.push(frame.new(x=symbolcheck(sym)))
+    return bounce(leval_, frame.new(x=defn, c=op_special_cont))
+
+
+###
+
+
+@spcl("trap")
+def op_trap(frame):
+    (x,) = unpack(frame.x, 1)
+    ok = T
+    try:
+        ## this has to be recursive because you can't pass
+        ## exceptions across the trampoline. there is a chance
+        ## of blowing the python stack here if you do a deeply
+        ## recursive trap.
+        res = leval(x, frame.e)
+    except:  ## pylint: disable=bare-except
+        ok = EL
+        t, v = sys.exc_info()[:2]
+        res = f"{t.__name__}: {str(v)}"
+    return bounce(frame.c, cons(ok, cons(res, EL)))
+
+
+## }}}
+## {{{ quasiquote
+
+
+def qq_list_setup(frame, form):
+    elt, form = form
+    if not (isinstance(form, list) or form is EL):
+        raise TypeError(f"expected list, got {form!r}")
+    stack.push(frame.new(x=form))
+    return bounce(qq_list_next, frame.new(x=elt, c=qq_list_cont))
+
+
+def qq_finish(frame, value):
+    res = EL if value is SENTINEL else [value, EL]
+    while True:
+        f = stack.pop()
+        if f.x is SENTINEL:
+            break
+        res = [f.x, res]
+    return bounce(frame.c, res)
+
+
+def qq_list_cont(value):
+    frame = stack.pop()
+    form = frame.x
+
+    if form is EL:
+        return bounce(qq_finish, frame, value)
+
+    stack.push(frame.new(x=value))
+
+    return qq_list_setup(frame, form)
+
+
+def qq_spliced(value):
+    frame = stack.pop()
+    form = frame.x
+
+    if value is EL:
+        if form is EL:
+            return bounce(qq_finish, frame, SENTINEL)
+        return qq_list_setup(frame, form)
+
+    while value is not EL:
+        elt, value = value
+        if value is EL:
+            stack.push(frame.new(x=form))
+            return bounce(qq_list_cont, elt)
+        stack.push(frame.new(x=elt))
+
+    raise RuntimeError("logs in the bedpan")
+
+
+def qq_list_next(frame):
+    elt = frame.x
+
+    if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
+        _, x = unpack(elt, 2)
+        return bounce(leval_, frame.new(x=x, c=qq_spliced))
+    return bounce(qq, frame.new(x=elt, c=qq_list_cont))
+
+
+def qq_list(frame):
+    form = frame.x
+    app = form[0]
+
+    if eq(app, symbol("quasiquote")):
+        _, x = unpack(form, 2)
+        return bounce(qq, frame.new(x=x))
+
+    if eq(app, symbol("unquote")):
+        _, x = unpack(form, 2)
+        return bounce(leval_, frame.new(x=x))
+
+    if eq(app, symbol("unquote-splicing")):
+        _, x = unpack(form, 2)
+        raise SyntaxError("cannot use unquote-splicing here")
+
+    stack.push(frame.new(x=SENTINEL))
+
+    return qq_list_setup(frame, form)
+
+
+def qq(frame):
+    form = frame.x
+    if isinstance(form, list):
+        return bounce(qq_list, frame)
+    return bounce(frame.c, form)
+
+
+@spcl("quasiquote")
+def op_quasiquote(frame):
+    (form,) = unpack(frame.x, 1)
+    return bounce(qq, frame.new(x=form))
+
+
+## }}}
+## {{{ other primitives
+
+
+def unary(frame, func):
+    (x,) = unpack(frame.x, 1)
+    return bounce(frame.c, func(x))
+
+
+def binary(frame, func):
+    x, y = unpack(frame.x, 2)
+    return bounce(frame.c, func(x, y))
+
+
+@glbl(">string")
+def op_to_string(frame):
+    (x,) = unpack(frame.x, 1)
+    return bounce(stringify_, frame.new(x=x))
+
+
+@glbl("atom?")
+def op_atom(frame):
+    def f(x):
+        return T if atom(x) else EL
+
+    return unary(frame, f)
+
+
+@glbl("call/cc")
+@glbl("call-with-current-continuation")
+def op_callcc(frame):
+    (x,) = unpack(frame.x, 1)
+    if not callable(x):
+        raise TypeError(f"expected callable, got {x!r}")
+    cc = Continuation(frame.c)
+    arg = [cc, EL]
+    return bounce(x, frame.new(x=arg))
+
+
+@glbl("car")
+def op_car(frame):
+    return unary(frame, car)
+
+
+@glbl("cdr")
+def op_cdr(frame):
+    return unary(frame, cdr)
+
+
+@glbl("cons")
+def op_cons(frame):
+    return binary(frame, cons)
+
+
+@glbl("div")
+def op_div(frame):
+    def f(x, y):
+        if isinstance(x, int) and isinstance(y, int):
+            return x // y
+        return x / y
+
+    return binary(frame, f)
+
+
+@glbl("do")
+def op_do(frame):
+    x = frame.x
+    ret = EL
+    while x is not EL:
+        ret, x = x
+    return bounce(frame.c, ret)
+
+
+@glbl("eq?")
+def op_eq(frame):
+    def f(x, y):
+        return T if eq(x, y) else EL
+
+    return binary(frame, f)
+
+
+@glbl("equal?")
+def op_equal(frame):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} {y!r}")
+
+        return T if x == y else EL
+
+    return binary(frame, f)
+
+
+@glbl("error")
+def op_error(frame):
+    (x,) = unpack(frame.x, 1)
+    raise error(x)
+
+
+@glbl("eval")
+def op_eval(frame):
+    args = frame.x
+    if args is EL:
+        raise TypeError("need at least one arg")
+    x, args = args
+    if args is EL:
+        n_up = 0
+    else:
+        n_up, args = args
+        if args is not EL:
+            raise TypeError("too many args")
+
+    if isinstance(x, str):
+        l = []
+        p = Parser(l.append)
+        p.feed(x)
+        p.feed(None)
+        x = l[-1] if l else EL
+    e = frame.e
+    for _ in range(n_up):
+        if e is SENTINEL:
+            raise ValueError(f"cannot go up {n_up} levels")
+        e = e.p
+    return bounce(leval_, frame.new(x=x, e=e))
+
+
+###
+
+
+def op_exit_cont(value):
+    raise SystemExit(value)
+
+
+@glbl("exit")
+def op_exit(frame):
+    (x,) = unpack(frame.x, 1)
+    if isinstance(x, int):
+        raise SystemExit(x)
+    return bounce(stringify_, frame.new(x=x, c=op_exit_cont))
+
+
+###
+
+
+@glbl("last")
+def op_last(frame):
+    (x,) = unpack(frame.x, 1)
+    ret = EL
+    while x is not EL:
+        ret, x = x
+    return bounce(frame.c, ret)
+
+
+@glbl("lt?")
+def op_lt(frame):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} and {y!r}")
+        return T if x < y else EL
+
+    return binary(frame, f)
+
+
+@glbl("mul")
+def op_mul2(frame):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} and {y!r}")
+        return x * y
+
+    return binary(frame, f)
+
+
+@glbl("nand")
+def op_nand(frame):
+    def f(x, y):
+        if not (isinstance(x, int) and isinstance(y, int)):
+            raise TypeError(f"expected integers, got {x!r} and {y!r}")
+        return ~(x & y)
+
+    return binary(frame, f)
+
+
+@glbl("null?")
+def op_null(frame):
+    (x,) = unpack(frame.x, 1)
+    return bounce(frame.c, T if x is EL else EL)
+
+
+###
+
+
+def op_print_cont(value):
+    frame = stack.pop()
+    args = frame.x
+
+    if args is EL:
+        print(value)
+        return bounce(frame.c, EL)
+    print(value, end=" ")
+
+    arg, args = args
+
+    stack.push(frame.new(x=args))
+    return bounce(stringify_, frame.new(x=arg, c=op_print_cont))
+
+
+@glbl("print")
+def op_print(frame):
+    args = frame.x
+
+    if args is EL:
+        print()
+        return bounce(frame.c, EL)
+
+    arg, args = args
+
+    stack.push(frame.new(x=args))
+    return bounce(stringify_, frame.new(x=arg, c=op_print_cont))
+
+
+###
+
+
+@glbl("set-car!")
+def op_setcarbang(frame):
+    def f(x, y):
+        return set_car(x, y)
+
+    return binary(frame, f)
+
+
+@glbl("set-cdr!")
+def op_setcdrbang(frame):
+    def f(x, y):
+        return set_cdr(x, y)
+
+    return binary(frame, f)
+
+
+@glbl("sub")
+def op_sub(frame):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} and {y!r}")
+        return x - y
+
+    return binary(frame, f)
+
+
+@glbl("type")
+def op_type(frame):
+    def f(x):
+        ## pylint: disable=too-many-return-statements
+        if x is EL:
+            return symbol("()")
+        if x is T:
+            return symbol("#t")
+        if isinstance(x, list):
+            return symbol("pair")
+        if isinstance(x, Symbol):
+            return symbol("symbol")
+        if isinstance(x, int):
+            return symbol("integer")
+        if isinstance(x, float):
+            return symbol("float")
+        if isinstance(x, str):
+            return symbol("string")
+        if isinstance(x, Lambda):
+            return symbol("lambda")
+        if isinstance(x, Continuation):
+            return symbol("continuation")
+        if callable(x):
+            return symbol("primitive")
+        return symbol("opaque")
+
+    return unary(frame, f)
+
+
+###
+
+
+def op_while_cont(value):
+    frame = stack.pop()
+
+    if value is EL:
+        return bounce(frame.c, EL)
+    stack.push(frame)
+    return bounce(leval_, frame.new(c=op_while_cont))
+
+
+@glbl("while")
+def op_while(frame):
+    (x,) = unpack(frame.x, 1)
+    if not callable(x):
+        raise TypeError(f"expected callable, got {x!r}")
+
+    stack.push(frame.new(x=x))
+    return bounce(leval_, frame.new(x=x, c=op_while_cont))
+
+
+## }}}
+## {{{ ffi
+
+
+def module_ffi(args, module):
+    if not args:
+        raise TypeError("at least one arg required")
+    sym = symbolcheck(args.pop(0))
+    func = getattr(module, str(sym), SENTINEL)
+    if func is SENTINEL:
+        raise ValueError(f"function {sym!r} does not exist")
+    return func(*args)
+
+
+@ffi("math")
+def op_ffi_math(args):
+    import math  ## pylint: disable=import-outside-toplevel
+
+    return module_ffi(args, math)
+
+
+@ffi("random")
+def op_ffi_random(args):
+    import random  ## pylint: disable=import-outside-toplevel
+
+    return module_ffi(args, random)
+
+
+@ffi("range")
+def op_ffi_range(args):
+    return list(range(*args))
+
+
+@ffi("shuffle")
+def op_ffi_shuffle(args):
+    import random  ## pylint: disable=import-outside-toplevel
+
+    (l,) = args
+    random.shuffle(l)
+    return l
+
+
+@ffi("time")
+def op_ffi_time(args):
+    import time  ## pylint: disable=import-outside-toplevel
+
+    def f(args):
+        ret = []
+        for arg in args:
+            if isinstance(arg, list):
+                arg = tuple(arg)
+            ret.append(arg)
+        return ret
+
+    return module_ffi(f(args), time)
+
+
+## }}}
+## {{{ lisp runtime
+
+
+RUNTIME = r"""
+;; {{{ basics
+
+;; to accompany quasiquote
+(define unquote (lambda (x) (error "cannot unquote here")))
+(define unquote-splicing (lambda (x) (error "cannot unquote-splicing here")))
+
+;; used everywhere
+(define pair? (lambda (x) (if (eq? (type x) 'pair) #t ())))
+(define list  (lambda (& args) args))
+
+;; ditto
+(define cadr (lambda (l) (car (cdr l))))
+(define caddr (lambda (l) (car (cdr (cdr l)))))
+(define cadddr (lambda (l) (car (cdr (cdr (cdr l))))))
+(define caddddr (lambda (l) (car (cdr (cdr (cdr (cdr l)))))))
+
+;; }}}
+;; {{{ begin
+
+(define begin do)
+
+;; }}}
+;; {{{ foreach
+;; call f for each element of lst
+
+(define foreach (lambda (f lst) ( do
+    (define c (call/cc (lambda (cc) cc)))
+    (if
+        (null? lst)
+        ()
+        ( do
+            (f (car lst))
+            (set! lst (cdr lst))
+            (c c)
+        )
+    )
+)))
+
+;; }}}
+;; {{{ list-builder
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; dingus to build a list by appending in linear time. it's an ad-hoc queue
+
+(define list-builder (lambda () ( do
+    (define ht (list () ()))
+    (define add (lambda (x) ( do
+        (define node (cons x ()))
+        (if
+            (null? (car ht))
+            ( do
+                (set-car! ht node)
+                (set-cdr! ht node)
+            )
+            ( do
+                (set-cdr! (cdr ht) node)
+                (set-cdr! ht node)
+            )
+        )
+        dispatch
+    )))
+    (define dispatch (lambda (op & args)
+        (if
+            (eq? op 'add)
+            (if
+                (null? (cdr args))
+                (add (car args))
+                (error "add takes a single arg")
+            )
+            (if
+                (eq? op 'extend)
+                (if
+                    (null? (cdr args))
+                    ( do
+                        (foreach add (car args))
+                        dispatch
+                    )
+                    (error "extend takes a single list arg")
+                )
+                (if
+                    (eq? op 'get)
+                    (car ht)
+                    (error "unknown command")
+                )
+            )
+        )
+    ))
+    dispatch
+)))
+
+;; }}}
+;; {{{ def
+
+(special def (lambda (__special_def_funcargs__ & __special_def_body__)
+    (eval (def$ __special_def_funcargs__ __special_def_body__) 1)))
+
+(define def$ (lambda (funcargs body) ( do
+    (if
+        (pair? funcargs)
+        ()
+        (error "def needs a func to define!")
+    )
+    (define f (car funcargs))
+    (define a (cdr funcargs))
+    `(define ,f (lambda (,@a) (do ,@body)))
+)))
+
+;; }}}
+;; {{{ bitwise ops
+
+;; bitwise ops from nand
+(def (bnot x)   (nand x x))
+(def (band x y) (bnot (nand x y)))
+(def (bor  x y) (nand (bnot x) (bnot y)))
+(def (bxor x y) (band (nand x y) (bor x y)))
+
+;; }}}
+;; {{{ arithmetic
+
+(def (neg x) (sub 0 x))
+(def (add x y) (sub x (neg y)))
+
+;; oh, and mod
+(def (mod n d) (sub n (mul d (div n d))))
+
+;; absolute value
+(def (abs x)
+    (if
+        (lt? x 0)
+        (neg x)
+        x
+    )
+)
+
+;; copysign
+(def (copysign x y)
+    (if
+        (lt? y 0)
+        (neg (abs x))
+        (abs x)
+    )
+)
+
+;; (signed) shifts
+(def (lshift x n)
+    (cond
+        ((equal? n 0)   x)
+        ((equal? n 1)   (add x x))
+        (#t             (lshift (lshift x (sub n 1)) 1))
+    )
+)
+
+(def (rshift x n)
+    (cond
+        ((equal? n 0)   x)
+        ((equal? n 1)   (div x 2))
+        (#t             (rshift (rshift x (sub n 1)) 1))
+    )
+)
+
+;; }}}
+;; {{{ comparison predicates
+
+(def (le? x y) (if (lt? x y) #t (if (equal? x y) #t ())))
+(def (ge? x y) (not (lt? x y)))
+(def (gt? x y) (lt? y x))
+
+;; }}}
+;; {{{ and or not
+
+(special and (lambda (& __special_and_args__)
+    ((lambda (c)
+        (cond
+            ((null? __special_and_args__) ())
+            ((null? (cdr __special_and_args__))
+                (eval (car __special_and_args__)))
+            ((eval (car __special_and_args__)) ( do
+                (set! __special_and_args__ (cdr __special_and_args__))
+                (c c)
+            ))
+            (#t ())
+        )
+    ) (call/cc (lambda (cc) cc)) )
+))
+
+(special or (lambda (& __special_or_args__)
+    ((lambda (c)
+        (cond
+            ((null? __special_or_args__) ())
+            ((eval (car __special_or_args__)) #t)
+            (#t ( do
+                (set! __special_or_args__ (cdr __special_or_args__))
+                (c c)
+            ))
+        )
+    ) (call/cc (lambda (cc) cc)) )
+))
+
+(def (not x) (if (eq? x ()) #t ()))
+
+;; }}}
+;; {{{ assert
+
+(special assert (lambda (__special_assert_sexpr__)
+    (if
+        (eval __special_assert_sexpr__)
+        ()
+        (error (>string __special_assert_sexpr__))
+    )
+))
+
+;; }}}
+;; {{{ reverse
+
+(def (reverse l)
+    (define r ())
+    (define c (call/cc (lambda (cc) cc)))
+    (if
+        (null? l)
+        r
+        ( do
+            (set! r (cons (car l) r))
+            (set! l (cdr l))
+            (c c)
+        )
+    )
+)
+
+;; }}}
+;; {{{ apply
+
+(def (apply sym args) (eval (cons sym args)))
+
+;; }}}
+;; {{{ iter and enumerate
+
+(def (iter lst fin)
+    (define item ())
+    (define next (lambda ()
+        (if
+            (null? lst)
+            fin
+            (do
+                    (set! item (car lst))
+                    (set! lst (cdr lst))
+                    item
+            )
+        )
+    ))
+    next
+)
+
+(def (enumerate lst fin)
+    (define index 0)
+    (define item fin)
+    (define next (lambda ()
+        (if
+            (null? lst)
+            fin
+            (do
+                    (set! item (list index (car lst)))
+                    (set! index (add index 1))
+                    (set! lst (cdr lst))
+                    item
+            )
+        )
+    ))
+    next
+)
+
+;; }}}
+;; {{{ length
+
+(def (length l)
+    (define n 0)
+    (define c (call/cc (lambda (cc) cc)))
+    (if
+        (null? l)
+        n
+        ( do
+            (set! n (add n 1))
+            (set! l (cdr l))
+            (c c)
+        )
+    )
+)
+
+;; }}}
+;; {{{ fold, transpose, map
+;; sicp p.158-165 with interface tweaks
+(def (fold-left f initial sequence)
+    (define r initial)
+    (foreach (lambda (elt) (set! r (f elt r))) sequence)
+    r
+)
+
+(define reduce fold-left)  ;; python nomenclature
+
+(def (fold-right f initial sequence)
+      (fold-left f initial (reverse sequence)))
+
+(define accumulate fold-right)  ;; sicp nomenclature
+
+;(fold-left  cons () (list 1 4 9))  ;; (9 4 1)    (cons 9 (cons 4 (cons 1 ())))
+;(fold-right cons () (list 1 4 9))  ;; (1 4 9)    (cons 1 (cons 4 (cons 9 ())))
+
+(def (map1 f lst)
+    (def (g elt r) (cons (f elt) r))
+    (fold-right g () lst)
+)
+
+(def (accumulate-n f initial sequences)
+    (define r ())
+    (define c (call/cc (lambda (cc) cc)))
+    (if
+        (null? (car sequences))
+        (reverse r)
+        ( do
+            (set! r (cons (accumulate f initial (map1 car sequences)) r))
+            (set! sequences (map1 cdr sequences))
+            (c c)
+        )
+    )
+)
+
+(def (transpose lists) (accumulate-n cons () lists))
+
+(def (map f & lists)
+    (def (g tuple) (apply f tuple))
+    (map1 g (transpose lists))
+)
+
+;; }}}
+;; {{{ join
+
+(def (join x y)
+    (cond
+        ((null? x) y)
+        ((null? y) x)
+        ((null? (cdr x)) (cons (car x) y))
+        (#t (fold-right cons (fold-right cons () y) x))
+    )
+)
+
+;; }}}
+;; {{{ queue
+
+(def (queue)
+    (define h ())
+    (define t ())
+
+    (def (dispatch op & args)
+        (cond
+            ((eq? op (quote enqueue))
+                (if
+                    (equal? (length args ) 1)
+                    ( do
+                        (define node (cons (car args) ()))
+                        (if
+                            (null? h)
+                            (set! h node)
+                            (set-cdr! t node)
+                        )
+                        (set! t node)
+                        ()
+                    )
+                    (error "enqueue takes one arg")
+                )
+            )
+            ((eq? op (quote dequeue))
+                (if
+                    (equal? (length args) 0)
+                        (if
+                            (null? h)
+                            (error "queue is empty")
+                            ( let (
+                                (ret (car h)))
+                                (do
+                                    (set! h (cdr h))
+                                    (if (null? h) (set! t ()) ())
+                                    ret
+                                )
+                            )
+                        )
+                    (error "dequeue takes no args")
+                )
+            )
+            ((eq? op (quote empty?)) (eq? h ()))
+            ((eq? op (quote enqueue-many))
+                (if
+                    (and (equal? (length args) 1) (pair? (car args)))
+                    ( do
+                        (foreach enqueue (car args))
+                        dispatch
+                    )
+                    (error "enqueue-many takes one list arg")
+                )
+            )
+            ((eq? op (quote get-all)) h)
+        )
+    )
+    dispatch
+)
+
+
+;; }}}
+;; {{{ let
+
+(special let (lambda (__special_let_vdefs__ __special_let_body__)
+    (eval (let$ __special_let_vdefs__ __special_let_body__) 1)))
+
+(def (let$ vdefs body)
+    (define vdecls (transpose vdefs))
+    (define vars (car vdecls))
+    (define vals (cadr vdecls))
+    `((lambda (,@vars) ,body) ,@vals)
+)
+
+;; }}}
+;; {{{ let*
+
+(special let* (lambda (__special_lets_vdefs__ __special_lets_body__)
+    (eval (let*$ __special_lets_vdefs__ __special_lets_body__) 1)))
+
+(def (let*$ vdefs body)
+    (if
+        (null? vdefs)
+        body
+        ( do
+            (define kv (car vdefs))
+            (set! vdefs (cdr vdefs))
+            (define k (car kv))
+            (define v (cadr kv))
+          `((lambda (,k) ,(let*$ vdefs body)) ,v)
+        )
+    )
+)
+
+;; }}}
+;; {{{ letrec
+;; i saw this (define x ()) ... (set! x value) on stackoverflow somewhere
+
+(special letrec (lambda (__special_letrec_decls__ __special_letrec_body__)
+    (eval (letrec$ __special_letrec_decls__ __special_letrec_body__) 1)))
+
+(def (letrec$ decls & body)
+    (define names (map1 car decls))
+    (define values (map1 cadr decls))
+    (def (declare var) `(define ,var ()))
+    (def (initialize var-value) `(set! ,(car var-value) ,(cadr var-value)))
+    (def (declare-all) (map1 declare names))
+    (def (initialize-all) (map1 initialize decls))
+    `((lambda () ( do ,@(declare-all) ,@(initialize-all) ,@body)))
+)
+
+;; }}}
+;; {{{ associative table
+
+(def (table compare)
+    (define items ())
+    (def (dispatch m & args)
+        (cond
+            ((eq? m 'known) (not (null? (table$find items key compare))))
+            ((eq? m 'del) (set! items (table$delete items (car args) compare)))
+            ((eq? m 'get) ( do
+                (let* (
+                    (key (car args))
+                    (node (table$find items key compare)))
+                    (if
+                        (null? node)
+                        ()
+                        (cadr node)
+                    )
+                )
+            ))
+            ((eq? m 'iter) ( do
+                (let ((lst items))
+                    (lambda ()
+                        (if
+                            (null? lst)
+                            ()
+                            ( do
+                                (define ret (car lst))
+                                (set! lst (cdr lst))
+                                ret
+                            )
+                        )
+                    )
+                )
+            ))
+            ((eq? m 'len) (length items))
+            ((eq? m 'raw) items)
+            ((eq? m 'set) ( do
+                (let* (
+                    (key (car args))
+                    (value (cadr args))
+                    (node (table$find items key compare)))
+                    (if
+                        (null? node)
+                        ( do
+                            (let* (
+                                (node (cons key (cons value ()))))
+                                (set! items (cons node items)))
+                        )
+                        (set-car! (cdr node) value)
+                    )
+                )
+            ))
+            (#t (error "unknown method"))
+        )
+    )
+    dispatch
+)
+
+(def (table$find items key compare)
+    (cond
+      ((null? items) ())
+      ((compare (car (car items)) key) (car items))
+      (#t (table$find (cdr items) key compare))
+    )
+)
+
+(def (table$delete items key compare)
+    (define prev ())
+    (def (helper assoc key)
+        (cond
+            ((null? assoc) items)
+            ((compare (car (car assoc)) key) (do
+                (cond
+                    ((null? prev) (cdr assoc))
+                    (#t (do (set-cdr! prev (cdr assoc)) items))
+                )
+            ))
+            (#t ( do
+                (set! prev assoc)
+                (helper (cdr assoc) key)
+            ))
+        )
+    )
+    (helper items key)
+)
+
+;; }}}
+;; {{{ looping: loop, for
+
+;; call f in a loop forever
+(def (loop f)
+    (define c (call/cc (lambda (cc) cc)))
+    (f)
+    (c c)
+)
+
+;; call f in a loop forever or until (break) is called
+(def (loop-with-break f)
+    (define brk ())
+    (def (break) (brk ()))
+    (def (g)
+        (define c (call/cc (lambda (cc) cc)))
+        (f break)
+        (c c)
+    )
+    (set! brk (call/cc (lambda (cc) cc)))
+    (if
+        brk
+        (g)
+        ()
+    )
+)
+
+;; call f a given number of times as (f counter)
+(def (for f start stop step)
+    (if (lt? step 1) (error "step must be positive") ())
+    (define i start)
+    (define c (call/cc (lambda (cc) cc)))
+    (if
+        (lt? i stop)
+        ( do
+            (f i)
+            (set! i (add i step))
+            (c c)
+        )
+        ()
+    )
+)
+
+;; }}}
+;; {{{ iterate (compose with itself) a function
+
+(def (iter-func f x0 n)
+    (define c (call/cc (lambda (cc) cc)))
+    (if
+        (lt? n 1)
+        x0
+        (do
+            (set! x0 (f x0))
+            (set! n (sub n 1))
+            (c c)
+        )
+    )
+)
+
+;; }}}
+;; {{{ benchmarking
+
+(def (timeit f n)
+    (define t0 (time 'time))
+    (for f 0 n 1)
+    (define t1 (time 'time))
+    (define dt (sub t1 t0))
+    (if (lt? dt 1e-7) (set! dt 1e-7) ())
+    (if (lt? n 1) (set! n 1) ())
+    (list n dt (mul 1e6 (div dt n)) (div n dt))
+)
+
+;; }}}
+;; {{{ gcd
+
+(def (gcd x y)
+    (cond
+        ((lt? x y) (gcd y x))
+        ((equal? x 0) 1)
+        (#t ( do
+            (define c (call/cc (lambda (cc) cc)))
+            (if
+                (equal? y 0)
+                x
+                ( do
+                    (define r (mod x y))
+                    (set! x y)
+                    (set! y r)
+                    (c c)
+                )
+            )
+        ))
+    )
+)
+
+;; }}}
+;; {{{ smul
+
+;; signed integer multiplication from subtraction and right shift (division)
+(define umul (lambda (x y accum)
+    ((lambda (c)
+        (if
+            (equal? 0 x)
+            accum
+            ((lambda (& _) (c c))
+                (if
+                    (equal? (band x 1) 1)
+                    (set! accum (add accum y))
+                    ()
+                )
+                (set! x (div x 2))
+                (set! y (mul y 2))
+            )
+        )
+    ) (call/cc (lambda (cc) cc)))
+))
+
+(define smul (lambda (x y) (do
+    (define sign 1)
+    (if (lt? x 0) (set! sign (neg sign)) ())
+    (if (lt? y 0) (set! sign (neg sign)) ())
+    (cond
+        ((equal? x 0)       0)
+        ((equal? y 0)       0)
+        ((equal? (abs y) 1) (copysign x sign))
+        ((lt? y x)          (copysign (umul (abs y) (abs x) 0) sign))
+        (#t                 (copysign (umul (abs x) (abs y) 0) sign))
+    )
+)))
+
+;; }}}
+
+;; EOF
+"""
+
+
+parse(RUNTIME, leval)
 
 
 ## }}}
