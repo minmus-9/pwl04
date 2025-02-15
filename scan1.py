@@ -25,7 +25,6 @@ scan1.py -- trampolined scanner
 ## XXX pylint: disable=missing-docstring
 
 
-
 ## {{{ lisp runtime
 
 
@@ -805,8 +804,8 @@ class Scanner1:
                 except:  ## pylint: disable=bare-except
                     pass
             self.callback(ttype, t)
-            return
-        self.callback(ttype, None)
+        else:
+            self.callback(ttype, None)
 
     def k_sym(self, ch):
         ## pylint: disable=too-many-return-statements
@@ -1504,10 +1503,10 @@ class Scanner5:
             return
         self.pos[0], n = 0, len(text)
         pos, stab = self.pos, self.stab
-        while pos[0] < n:
-            p = pos[0]
-            pos[0] = p + 1
+        p = 0
+        while p < n:  ## walrus is faster but not on rocky8
             stab[self.state](text[p])
+            p = pos[0] = pos[0] + 1
 
     def push(self, ttype):
         if self.token:
@@ -1523,11 +1522,9 @@ class Scanner5:
                         ttype = self.T_FLOAT
                     except:  ## pylint: disable=bare-except
                         pass
-        elif ttype == self.T_SYM:
-            return
-        else:
-            t = None
-        self.callback(ttype, t)
+            self.callback(ttype, t)
+        elif ttype != self.T_SYM:
+            self.callback(ttype, None)
 
     def do_sym(self, ch):
         ## pylint: disable=too-many-branches
@@ -1613,7 +1610,7 @@ def main():
     K = Scanner2  ## 1.62
     K = Scanner3  ## 1.72
     K = Scanner4  ## 1.50
-    K = Scanner5  ## 1.21
+    K = Scanner5  ## 1.20
     f = lambda *_: None
     n = 200
     s = RUNTIME
