@@ -759,10 +759,8 @@ def stringify_(frame):
         return bounce(frame.c, "()")
     if x is T:
         return bounce(frame.c, "#t")
-    if isinstance(x, (Symbol, int, float)):
+    if isinstance(x, (Symbol, int, float, str)):
         return bounce(frame.c, str(x))
-    if isinstance(x, str):
-        return bounce(frame.c, '"' + repr(x)[1:-1].replace('"', '\\"') + '"')
     if isinstance(x, Lambda):
         return bounce(x.stringify_, frame)
     if isinstance(x, Continuation):
