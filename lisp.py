@@ -864,7 +864,7 @@ def leval_(frame):
         stack.fpush(frame, x=args)
         return bounce(eval_proc_done, op)
     if not isinstance(op, list):
-        raise TypeError(f"expected proc or list, got {sym!r}")
+        raise TypeError(f"expected proc or list, got {op!r}")
 
     stack.fpush(frame, x=args)
     return bounce(leval_, Frame(frame, x=op, c=eval_proc_done))
@@ -1564,11 +1564,10 @@ def op_type(frame):
 
 
 def op_while_cont(value):
-    frame = stack.pop()
-
+    frame = stack.top()
     if value is EL:
+        stack.pop()
         return bounce(frame.c, EL)
-    stack.fpush(frame)
     return bounce(leval_, Frame(frame, c=op_while_cont))
 
 
