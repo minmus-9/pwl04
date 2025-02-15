@@ -56,10 +56,10 @@ class SymbolTable:
         self.t = {}
 
     def symbol(self, s):
-        assert type(s) is str and s
-        if s not in self.t:
-            self.t[s] = Symbol(s)
-        return self.t[s]
+        if s in self.t:
+            return self.t[s]
+        self.t[s] = ret = Symbol(s)
+        return ret
 
 
 symbol = SymbolTable().symbol
@@ -106,6 +106,13 @@ class Queue:
 
     def __init__(self):
         self.h = self.t = EL
+
+    def dequeue(self):
+        n = self.h
+        self.h = n[1]
+        if self.h is EL:
+            self.t = EL
+        return n[0]
 
     def enqueue(self, x):
         n = [x, EL]
@@ -193,7 +200,7 @@ class Parser1:
 
 
 ## }}}
-## {{{ parser #2 inlining
+## {{{ parser #2 inlined
 
 
 class Parser2:
@@ -219,7 +226,7 @@ class Parser2:
             self.qstack.append(")")
             self.stack.append(Queue())
         elif ttype == s.T_RPAR:
-            assert self.qstack.pop() == ")"
+            del self.qstack[-1]
             l = self.quote_wrap(self.stack.pop().head())
             if self.stack:
                 self.add(l)
@@ -240,10 +247,9 @@ class Parser2:
         self.stack[-1].enqueue(self.quote_wrap(x))
 
     def quote_wrap(self, x):
-        ret = x
         while self.qstack and isinstance(self.qstack[-1], Symbol):
-            ret = [self.qstack.pop(), [ret, EL]]
-        return ret
+            x = [self.qstack.pop(), [x, EL]]
+        return x
 
 
 ## }}}
@@ -253,7 +259,7 @@ def main():
     import time  ## pylint: disable=import-outside-toplevel
 
     K = Parser1  ## 2.01
-    K = Parser2  ## 1.67
+    K = Parser2  ## 1.66
     f = lambda *_: None
     n = 200
     s = RUNTIME

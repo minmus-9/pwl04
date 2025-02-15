@@ -355,102 +355,130 @@ genv.set(symbol("#t"), T)
 
 
 ## }}}
-## {{{ scanner
+## {{{ scanner #5: state-based, no lut
 
 
 class Scanner:
+    """
+    i am shocked that this krusty coding is the fastest. i have fiddled
+    with this class a lot, and this is the fastest implementation i know.
+    """
+
     T_SYM = "symbol"
     T_INT = "int"
     T_FLOAT = "float"
+    T_STRING = "string"
     T_LPAR = "("
     T_RPAR = ")"
     T_TICK = "'"
     T_BACKTICK = "`"
     T_COMMA = ","
     T_COMMA_AT = ",@"
-    T_STRING = "string"
     T_EOF = "eof"
 
+    S_SYM = 0
+    S_COMMENT = 1
+    S_STRING = 2
+    S_ESC = 3
+    S_COMMA = 4
+
     def __init__(self, callback):
-        self.pos = 0
-        self.token = Queue()
-        self.parens = Stack()
-        self.cont = self.k_sym
+        self.pos = [0]  ## yup, a list
+        self.token = []
+        self.add = self.token.append
+        self.parens = []
         self.callback = callback
+        self.stab = (  ## this corresponds to the S_* constants
+            self.do_sym,
+            self.do_comment,
+            self.do_string,
+            self.do_esc,
+            self.do_comma,
+        )
+        self.state = self.S_SYM
 
     def feed(self, text):
         if text is None:
+            if self.state not in (self.S_SYM, self.S_COMMENT):
+                raise SyntaxError("eof in {self.state!r}")
             if self.parens:
                 raise SyntaxError(f"eof expecting {self.parens.pop()!r}")
             self.push(self.T_SYM)
             self.push(self.T_EOF)
-        else:
-            self.pos, n = 0, len(text)
-            cont = self.cont
-            while self.pos < n:
-                p = self.pos
-                ch = text[p]
-                self.pos = p + 1
-                cont = cont(ch) or cont
-            self.cont = cont
+            return
+        self.pos[0], n = 0, len(text)
+        pos, stab = self.pos, self.stab
+        p = 0
+        while p < n:
+            stab[self.state](text[p])
+            p = pos[0] = pos[0] + 1
 
     def push(self, ttype):
-        l = self.token
-        if l:
-            t = ""
-            while l:
-                t += l.dequeue()
-        elif ttype == self.T_SYM:
-            return
-        else:
-            self.callback(ttype, None)
-            return
-        if ttype == self.T_SYM and t[0] in "0123456789-.+":
-            try:
-                t = int(t, 0)
-                ttype = self.T_INT
-            except ValueError:
+        if self.token:
+            t = "".join(self.token)
+            self.token.clear()
+            if ttype == self.T_SYM and t[0] in "0123456789-.+":
                 try:
-                    t = float(t)
-                    ttype = self.T_FLOAT
-                except:  ## pylint: disable=bare-except
-                    pass
-        self.callback(ttype, t)
+                    t = int(t, 0)
+                    ttype = self.T_INT
+                except ValueError:
+                    try:
+                        t = float(t)
+                        ttype = self.T_FLOAT
+                    except:  ## pylint: disable=bare-except
+                        pass
+            self.callback(ttype, t)
+        elif ttype != self.T_SYM:
+            self.callback(ttype, None)
 
-    def k_sym(self, ch):
-        ## pylint: disable=too-many-return-statements
-        if ch == "(":
-            return self.c_lpar(ch)
-        if ch == ")":
-            return self.c_rpar(ch)
-        if ch in " \n\r\t":
-            return self.c_ws(ch)
-        if ch == "[":
-            return self.c_lbrack(ch)
-        if ch == "]":
-            return self.c_rbrack(ch)
-        if ch == ";":
-            return self.c_semi(ch)
-        if ch == "'":
-            return self.c_tick(ch)
-        if ch == ",":
-            return self.c_comma(ch)
-        if ch == "`":
-            return self.c_backtick(ch)
-        self.token.enqueue(ch)
-        return self.k_sym
+    def do_sym(self, ch):
+        ## pylint: disable=too-many-branches
+        if ch in "()[] \n\r\t;\"',`":  ## all of this is actually faster.
+            if ch in "([":
+                self.parens.append(")" if ch == "(" else "]")
+                self.push(self.T_SYM)
+                self.push(self.T_LPAR)
+            elif ch in ")]":
+                if not self.parens:
+                    raise SyntaxError(f"too many {ch!r}")
+                if self.parens.pop() != ch:
+                    raise SyntaxError(f"unexpected {ch!r}")
+                self.push(self.T_SYM)
+                self.push(self.T_RPAR)
+            elif ch in " \n\r\t":
+                self.push(self.T_SYM)
+            elif ch == ";":
+                self.push(self.T_SYM)
+                self.state = self.S_COMMENT
+            else:
+                ## less common cases that aren't delimiters: ["] ['] [,] [`]
+                if self.token:
+                    raise SyntaxError(f"{ch!r} not a delimiter")
+                if ch == '"':
+                    self.state = self.S_STRING
+                    return
+                self.add(ch)
+                if ch == "'":
+                    self.push(self.T_TICK)
+                elif ch == ",":
+                    self.state = self.S_COMMA
+                else:
+                    self.push(self.T_BACKTICK)
+        else:
+            self.add(ch)
 
-    def k_comment(self, ch):
-        return self.k_sym if ch in "\n\r" else self.k_comment
+    def do_comment(self, ch):
+        if ch in "\n\r":
+            self.state = self.S_SYM
 
-    def k_quote(self, ch):
-        if ch == "\\":
-            return self.k_backslash
+    def do_string(self, ch):
         if ch == '"':
             self.push(self.T_STRING)
-            return self.k_sym
-        self.token.enqueue(ch)
-        return self.k_quote
+            self.state = self.S_SYM
+        elif ch == "\\":
+            self.state = self.S_ESC
+        else:
+            self.add(ch)
 
     ESC = {
         "\\": "\\",
@@ -460,157 +488,74 @@ class Scanner:
         '"': '"',
     }
 
-    def k_backslash(self, ch):
+    def do_esc(self, ch):
         c = self.ESC.get(ch)
         if c is None:
             raise SyntaxError(f"bad escape {ch!r}")
-        self.token.enqueue(c)
-        return self.k_quote
+        self.add(c)
+        self.state = self.S_STRING
 
-    def k_comma(self, ch):
+    def do_comma(self, ch):
         if ch == "@":
-            self.token.enqueue("@")
+            self.add("@")
             self.push(self.T_COMMA_AT)
         else:
-            self.pos -= 1
+            self.pos[0] -= 1
             self.push(self.T_COMMA)
-        return self.k_sym
-
-    def c_semi(self, _):
-        self.push(self.T_SYM)
-        return self.k_comment
-
-    def c_quote(self, ch):
-        if self.token:
-            raise SyntaxError(f"{ch!r} not a delimiter")
-        return self.k_quote
-
-    def c_comma(self, ch):
-        if self.token:
-            raise SyntaxError(f"{ch!r} not a delimiter")
-        self.token.enqueue(",")
-        return self.k_comma
-
-    def c_tick(self, ch):
-        if self.token:
-            raise SyntaxError(f"{ch!r} not a delimiter")
-        self.token.enqueue(ch)
-        self.push(self.T_TICK)
-        return self.k_sym
-
-    def c_backtick(self, ch):
-        if self.token:
-            raise SyntaxError(f"{ch!r} not a delimiter")
-        self.token.enqueue(ch)
-        self.push(self.T_BACKTICK)
-        return self.k_sym
-
-    def c_lpar(self, _):
-        self.parens.push(")")
-        self.push(self.T_SYM)
-        self.push(self.T_LPAR)
-        return self.k_sym
-
-    def c_rpar(self, ch):
-        if not self.parens:
-            raise SyntaxError(f"too many {ch!r}")
-        if self.parens.pop() != ch:
-            raise SyntaxError(f"{ch!r} inside '['")
-        self.push(self.T_SYM)
-        self.push(self.T_RPAR)
-        return self.k_sym
-
-    def c_lbrack(self, _):
-        self.parens.push("]")
-        self.push(self.T_SYM)
-        self.push(self.T_LPAR)
-        return self.k_sym
-
-    def c_rbrack(self, ch):
-        if not self.parens:
-            raise SyntaxError(f"too many {ch!r}")
-        if self.parens.pop() != ch:
-            raise SyntaxError(f"{ch!r} inside '('")
-        self.push(self.T_SYM)
-        self.push(self.T_RPAR)
-        return self.k_sym
-
-    def c_ws(self, _):
-        self.push(self.T_SYM)
-        return self.k_sym
+        self.state = self.S_SYM
 
 
 ## }}}
-## {{{ parser
+## {{{ parser #2: inlined
 
 
 class Parser:
+    QT = {
+        "'": symbol("quote"),
+        ",": symbol("unquote"),
+        ",@": symbol("unquote-splicing"),
+        "`": symbol("quasiquote"),
+    }
+
     def __init__(self, callback):
         self.callback = callback
-        self.stack = Stack()
-        self.qstack = Stack()
+        self.stack = []
+        self.qstack = []
         self.scanner = Scanner(self.process_token)
         self.feed = self.scanner.feed
-
-    def t_sym(self, token):
-        self.add(symbol(token))
-
-    def t_lpar(self, _):
-        self.qstack.push(")")
-        self.stack.push(Queue())
-
-    def t_rpar(self, _):
-        assert self.stack  ## Scanner checks this
-        assert self.qstack.pop() == ")"
-        l = self.quote_wrap(self.stack.pop().head())
-        if not self.stack:
-            self.callback(l)
-        else:
-            self.add(l)
-
-    def t_eof(self, _):
-        assert not self.stack  ## Scanner checks this
-        if self.qstack:
-            raise SyntaxError("unclosed quasiquote")
 
     def process_token(self, ttype, token):
         s = self.scanner
         if ttype == s.T_SYM:
-            self.t_sym(token)
+            self.add(symbol(token))
         elif ttype == s.T_LPAR:
-            self.t_lpar(token)
+            self.qstack.append(")")
+            self.stack.append(Queue())
         elif ttype == s.T_RPAR:
-            self.t_rpar(token)
-        elif ttype in (s.T_INT, s.T_FLOAT, s.T_STRING):
+            del self.qstack[-1]
+            l = self.quote_wrap(self.stack.pop().head())
+            if self.stack:
+                self.add(l)
+            else:
+                self.callback(l)
+        elif ttype == s.T_INT or ttype == s.T_FLOAT or ttype == s.T_STRING:
             self.add(token)
         elif ttype in (s.T_TICK, s.T_COMMA, s.T_COMMA_AT, s.T_BACKTICK):
-            self.set_up_quote(token)
-        else:
-            self.t_eof(token)
+            self.qstack.append(self.QT[token])
+        else:  ## EOF
+            assert not self.stack  ## Scanner checks this
+            if self.qstack:
+                raise SyntaxError("unclosed quasiquote")
 
     def add(self, x):
         if not self.stack:
             raise SyntaxError(f"expected '(' got {x!r}")
-        self.stack.top().enqueue(self.quote_wrap(x))
+        self.stack[-1].enqueue(self.quote_wrap(x))
 
     def quote_wrap(self, x):
-        ret = x
-        while self.qstack and isinstance(self.qstack.top(), Symbol):
-            s = self.qstack.pop()
-            ret = cons(s, cons(ret, EL))
-        return ret
-
-    def set_up_quote(self, s):
-        if s == "'":
-            s = symbol("quote")
-        elif s == ",":
-            s = symbol("unquote")
-        elif s == ",@":
-            s = symbol("unquote-splicing")
-        else:
-            assert s == "`"
-            s = symbol("quasiquote")
-        self.qstack.push(s)
+        while self.qstack and isinstance(self.qstack[-1], Symbol):
+            x = [self.qstack.pop(), [x, EL]]
+        return x
 
 
 ## }}}
