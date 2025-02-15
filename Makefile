@@ -22,8 +22,7 @@ TFLAG:=-p
 
 PYTHON:=python3
 
-F:=lisp04-fast/lisp.py
-#F:=lisp04-trampolined-fancy/lisp.py
+F:=lisp.py
 
 LISP:=$(PYTHON) $(F)
 
