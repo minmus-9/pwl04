@@ -1459,6 +1459,11 @@ class Scanner4:
 
 
 class Scanner5:
+    """
+    i am shocked that this krusty coding is the fastest. i have fiddled
+    with this class a lot, and this is the fastest implementation i know.
+    """
+
     T_SYM = "symbol"
     T_INT = "int"
     T_FLOAT = "float"
@@ -1478,7 +1483,7 @@ class Scanner5:
     S_COMMA = 4
 
     def __init__(self, callback):
-        self.pos = [0]
+        self.pos = [0]  ## yup, a list
         self.token = []
         self.add = self.token.append
         self.parens = []
@@ -1504,7 +1509,7 @@ class Scanner5:
         self.pos[0], n = 0, len(text)
         pos, stab = self.pos, self.stab
         p = 0
-        while p < n:  ## walrus is faster but not on rocky8
+        while p < n:
             stab[self.state](text[p])
             p = pos[0] = pos[0] + 1
 
@@ -1528,7 +1533,7 @@ class Scanner5:
 
     def do_sym(self, ch):
         ## pylint: disable=too-many-branches
-        if ch in "()[] \n\r\t;\"',`":
+        if ch in "()[] \n\r\t;\"',`":  ## all of this is actually faster.
             if ch in "([":
                 self.parens.append(")" if ch == "(" else "]")
                 self.push(self.T_SYM)
@@ -1536,9 +1541,8 @@ class Scanner5:
             elif ch in ")]":
                 if not self.parens:
                     raise SyntaxError(f"too many {ch!r}")
-                exp = self.parens.pop()
-                if exp != ch:
-                    raise SyntaxError(f"{ch!r} while expecting {exp!r}")
+                if self.parens.pop() != ch:
+                    raise SyntaxError(f"unexpected {ch!r}")
                 self.push(self.T_SYM)
                 self.push(self.T_RPAR)
             elif ch in " \n\r\t":
@@ -1547,6 +1551,7 @@ class Scanner5:
                 self.push(self.T_SYM)
                 self.state = self.S_COMMENT
             else:
+                ## less common cases that aren't delimiters: ["] ['] [,] [`]
                 if self.token:
                     raise SyntaxError(f"{ch!r} not a delimiter")
                 if ch == '"':
@@ -1567,11 +1572,11 @@ class Scanner5:
             self.state = self.S_SYM
 
     def do_string(self, ch):
-        if ch == "\\":
-            self.state = self.S_ESC
-        elif ch == '"':
+        if ch == '"':
             self.push(self.T_STRING)
             self.state = self.S_SYM
+        elif ch == "\\":
+            self.state = self.S_ESC
         else:
             self.add(ch)
 
@@ -1610,7 +1615,7 @@ def main():
     K = Scanner2  ## 1.62
     K = Scanner3  ## 1.72
     K = Scanner4  ## 1.50
-    K = Scanner5  ## 1.20
+    K = Scanner5  ## 1.19
     f = lambda *_: None
     n = 200
     s = RUNTIME
