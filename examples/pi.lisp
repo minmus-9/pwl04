@@ -1,4 +1,23 @@
-; "calculate" pi as 4 * atan(1) using Taylor series (this is very slow)
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; calculate pi
+;;
+;; pwl04 - python with lisp, a collection of lisp evaluators for Python
+;;       https://github.com/minmus-9/pwl04
+;; Copyright (C) 2025  Mark Hays (github:minmus-9)
+;; 
+;; This program is free software: you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+;; 
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+;; 
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
 (def (pi1 _)
     (define z 1)
     (define k 3)
@@ -11,18 +30,6 @@
     )
 )
 (timeit pi1 1)
-
-;    k, a, b, a1, b1 = 2, 4, 1, 12, 4
-;    while True:
-;        # Next approximation
-;        p, q, k = k*k, 2*k+1, k+1
-;        a, b, a1, b1 = a1, b1, p*a+q*a1, p*b+q*b1
-;        # Print common digits
-;        d, d1 = a//b, a1//b1
-;        while d == d1:
-;            output(d)
-;            a, a1 = 10*(a%b), 10*(a1%b1)
-;            d, d1 = a//b, a1//b1
 
 (def (pi2 & _)
     (define k 2)
