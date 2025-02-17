@@ -54,9 +54,7 @@
 
 (def (force x) (x))
 
-(special cons-stream (lambda (x y)
-    (eval `(cons ,x (memo-proc (lambda () ,y))) 1)
-))
+(special cons-stream (lambda (x y) (eval `(cons ,x (delay ,y)) 1)))
 
 (def (stream-car x) (car x))
 (def (stream-cdr x) (force (cdr x)))
@@ -77,14 +75,6 @@
 
 (def (fibgen a b) (cons-stream a (fibgen b (add a b))))
 (define fibs (fibgen 0 1))
-
-(while (lambda ()
-    (do
-        ;(print (stream-car fibs))
-        (set! fibs (stream-cdr fibs))
-        () ;#t
-    )
-))
 
 (def (stream-counter start)
     (cons-stream
@@ -123,32 +113,49 @@
 
 ;(stream-for-each print (stream-enumerate-interval 1 10))
 
-(def (map2 proc lst)
-    (if
-        (null? lst)
-        ()
-        (cons (proc (car lst))
-              (map2 proc (cdr lst)))
-    )
-)
-
-(def (print-ident x) (print x) x)
-
 (def (stream-map proc & argstreams)
     (if
         (stream-null? (car argstreams))
         the-empty-stream
         (cons-stream
-            (apply proc (map2 stream-car argstreams))
-            (apply stream-map (cons proc (map2 stream-cdr argstreams)))
+            (apply proc (map stream-car argstreams))
+            (apply stream-map (cons proc (map stream-cdr argstreams)))
         )
     )
 )
-    
-(define ones (cons-stream 1 ones))
-(def (add-streams s1 s2) (stream-map print s1 s2))
-(stream-for-each print (add-streams ones ones))
-(define integers
-    (cons-stream 1 (add-streams ones integers)))
 
-(stream-for-each print integers)
+(def (stream-sink f s)
+    (def (g)
+        (if
+            (stream-null? s)
+            ()
+            (do
+                (f (stream-car s))
+                (set! s (stream-cdr s))
+                #t
+            )
+        )
+    )
+    (while g)
+)
+
+(def (stream-add s1 s2) (stream-map add s1 s2))
+
+(define ones (cons-stream 1 ones))
+
+(define integers
+    (cons-stream 1 (stream-add ones integers)))
+
+;(stream-sink print integers)
+;(stream-for-each print integers)
+
+
+
+
+(define fibs (cons-stream 0 (cons-stream 1 (stream-add (stream-cdr fibs) fibs))))
+(stream-sink print fibs)
+
+
+
+
+
