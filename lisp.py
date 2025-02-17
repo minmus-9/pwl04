@@ -1297,6 +1297,14 @@ def op_to_string(frame):
     return bounce(stringify_, Frame(frame, x=x))
 
 
+@glbl("apply")
+def op_apply(frame):
+    proc, args = unpack(frame.x, 2)
+    if not callable(proc):
+        raise TypeError(f"expected callable, got {proc!r}")
+    return bounce(proc, Frame(frame, x=args))
+
+
 @glbl("atom?")
 def op_atom(frame):
     def f(x):
@@ -1867,11 +1875,6 @@ RUNTIME = r"""
         )
     )
 )
-
-;; }}}
-;; {{{ apply
-
-(def (apply sym args) (eval (cons sym args)))
 
 ;; }}}
 ;; {{{ iter and enumerate
