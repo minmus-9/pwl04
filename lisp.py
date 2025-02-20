@@ -57,13 +57,15 @@ __all__ = (
     "set_car",
     "set_cdr",
     "spcl",
-    "split",
     "stack",
     "symbol",
+    "uncons",
 )
 
 
 ## }}}
+
+## {{{ core
 ## {{{ trampoline
 
 
@@ -189,69 +191,8 @@ def set_cdr(x, y):
     return EL
 
 
-def split(x):
+def uncons(x):
     return x
-
-
-## }}}
-## {{{ stack frame
-
-
-class Frame:
-    ## pylint: disable=too-few-public-methods
-
-    __slots__ = ("x", "c", "e")
-
-    def __init__(self, f, x=None, c=None, e=None):
-        self.x = f.x if x is None else x
-        self.c = f.c if c is None else c
-        self.e = f.e if e is None else e
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.x}, {self.c}, {self.e})"
-
-
-## }}}
-## {{{ stack and global frame stack
-
-
-class Stack:
-    __slots__ = ("s",)
-
-    def __init__(self):
-        self.s = EL
-
-    def __bool__(self):
-        return self.s is not EL
-
-    def clear(self):
-        self.s = EL
-
-    def push(self, x):
-        self.s = [x, self.s]
-
-    def pop(self):
-        ret, self.s = self.s
-        return ret
-
-    def top(self):
-        return self.s[0]
-
-    ## for continuations
-
-    def get(self):
-        return self.s
-
-    def set(self, value):
-        self.s = value
-
-    ## avoid inheritance for performance:
-
-    def fpush(self, frame, x=None, c=None, e=None):
-        self.s = [Frame(frame, x, c, e), self.s]
-
-
-stack = Stack()
 
 
 ## }}}
@@ -630,6 +571,11 @@ def repl(callback):
 
 
 def main(force_repl=False):
+    try:
+        sys.set_int_max_str_digits(0)
+    except AttributeError:
+        pass
+
     def callback(sexpr):
         try:
             value = leval(sexpr)
@@ -651,6 +597,88 @@ def main(force_repl=False):
         stop = True
     if force_repl or not stop:
         raise SystemExit(repl(callback))
+    print(dict((k, v) for (k, v) in Stats.__dict__.items() if not k.startswith("_")))
+    assert not stack
+
+
+## }}}
+## {{{ stack frame
+
+
+class Frame:
+    ## pylint: disable=too-few-public-methods
+
+    __slots__ = ("x", "c", "e")
+
+    def __init__(self, f, x=None, c=None, e=None):
+        self.x = f.x if x is None else x
+        self.c = f.c if c is None else c
+        self.e = f.e if e is None else e
+
+    def __repr__(self):
+        return f"{self.__class__.__name__}({self.x}, {self.c}, {self.e})"
+
+
+## }}}
+## {{{ stack
+
+class Stats:
+    npush = 0
+    npop = 0
+    n = 0
+    depth = 0
+
+class Stack:
+    __slots__ = ("s",)
+
+    def __init__(self):
+        self.s = EL
+
+    def __bool__(self):
+        return self.s is not EL
+
+    def clear(self):
+        self.s = EL
+
+    def push(self, x):
+        Stats.n += 1
+        Stats.npush += 1
+        Stats.depth = max(Stats.depth, Stats.n)
+        self.s = [x, self.s]
+
+    def pop(self):
+        Stats.npop += 1
+        Stats.n -= 1
+        ret, self.s = self.s
+        return ret
+
+    def top(self):
+        return self.s[0]
+
+    ## for continuations
+
+    def get(self):
+        return self.s
+
+    def set(self, value):
+        self.s = value
+
+    ## avoid inheritance for performance:
+
+    def fpush(self, frame, x=None, c=None, e=None):
+        Stats.n += 1
+        Stats.npush += 1
+        Stats.depth = max(Stats.depth, Stats.n)
+        self.s = [Frame(frame, x, c, e), self.s]
+
+
+## }}}
+## }}}
+
+## {{{ global frame stack
+
+
+stack = Stack()
 
 
 ## }}}
@@ -779,6 +807,12 @@ def stringify_(frame):
 ## {{{ eval
 
 
+class Regs:
+    x = SENTINEL
+    c = SENTINEL
+    e = SENTINEL
+
+
 def leval(sexpr, env=SENTINEL):
     e = genv if env is SENTINEL else env
     return trampoline(leval_, Frame(SENTINEL, x=sexpr, e=e, c=land))
@@ -788,30 +822,34 @@ def eval_setup(frame, args):
     if not isinstance(args, list):
         raise SyntaxError("args must be a proper list")
     arg, args = args
+    if args is EL:
+        return bounce(leval_, Frame(frame, x=arg, c=eval_last_arg))
     stack.fpush(frame, x=args)
     return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
+
+
+def eval_last_arg(value):
+    ret = [value, EL]
+    while True:
+        f = stack.pop()
+        if f.x is SENTINEL:
+            break
+        ret = [f.x, ret]
+    frame = stack.pop()
+    proc = frame.x
+    ## at this point, need to see if proc is ffi
+    if getattr(proc, "ffi", False):
+        ## should construct args as a pylist not pair but then Frame would
+        ## need a new field to hold proc all the way through. this is about
+        ## a global 5% performance hit. i care more about ffi capability
+        ## than performance. plus, this thing is slow enough already.
+        return bounce(do_ffi, Frame(frame, x=[ret, proc]))
+    return bounce(proc, Frame(frame, x=ret))
 
 
 def eval_next_arg(value):
     frame = stack.pop()
     args = frame.x
-
-    if args is EL:
-        ret = [value, EL]
-        while True:
-            f = stack.pop()
-            if f.x is SENTINEL:
-                proc = f.c  ## NB abuse of .c field
-                break
-            ret = [f.x, ret]
-        ## at this point, need to see if proc is ffi
-        if getattr(proc, "ffi", False):
-            ## should construct args as a pylist not pair but then Frame would
-            ## need a new field to hold proc all the way through. this is about
-            ## a global 5% performance hit. i care more about ffi capability
-            ## than performance. plus, this thing is slow enough already.
-            return bounce(do_ffi, Frame(frame, x=[ret, proc]))
-        return bounce(proc, Frame(frame, x=ret))
 
     stack.fpush(frame, x=value)
     return eval_setup(frame, args)
@@ -834,7 +872,8 @@ def eval_proc_done(proc):
 
     ## evaluate args...
 
-    stack.fpush(frame, c=proc, x=SENTINEL)  ## NB abuse .c field
+    stack.fpush(frame, x=proc)
+    stack.fpush(frame, x=SENTINEL)
 
     return eval_setup(frame, args)
 
@@ -1645,6 +1684,7 @@ def op_ffi_time(args):
 
 
 ## }}}
+
 ## {{{ lisp runtime
 
 

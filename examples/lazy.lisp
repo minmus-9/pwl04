@@ -3,9 +3,8 @@
 (
     (lambda (n)
         (
-            (lambda (fact)
-                (fact fact n)
-            )   (lambda (ft k) (if (equal? k 1) 1 (mul k (ft ft (sub k 1)))))
+            (lambda (fact) (fact fact n))
+                (lambda (ft k) (if (equal? k 1) 1 (mul k (ft ft (sub k 1)))))
         )
     )
 10)
