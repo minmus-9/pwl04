@@ -73,20 +73,20 @@ class _Land(Exception):
     pass
 
 
-def trampoline(func, *args):
+def trampoline(func):
     try:
         while True:
-            func, args = func(*args)
+            func = func()
     except _Land as exc:
-        return exc.args[0]
+        return
 
 
-def bounce(func, *args):
-    return func, args
+def bounce(func):
+    return func
 
 
-def land(value):
-    raise _Land(value)
+def land():
+    raise _Land()
 
 
 ## }}}
@@ -293,6 +293,36 @@ class Environment:
 
 genv = Environment(EL, EL, SENTINEL)
 genv.set(symbol("#t"), T)
+
+
+## }}}
+## {{{ primitive definition decorators
+
+
+def glbl(name):
+    def wrap(func):
+        genv.set(symbol(name), func)
+        return func
+
+    return wrap
+
+
+def spcl(name):
+    def wrap(func):
+        genv.set(symbol(name), func)
+        func.special = True
+        return func
+
+    return wrap
+
+
+def ffi(name):
+    def wrap(func):
+        genv.set(symbol(name), func)
+        func.ffi = True
+        return func
+
+    return wrap
 
 
 ## }}}
@@ -675,6 +705,13 @@ class Stack:
 ## }}}
 ## }}}
 
+## {{{ global stack
+
+
+stack = Stack()
+
+
+## }}}
 ## {{{ registers
 
 
@@ -684,7 +721,6 @@ class Registers:
         "cont",
         "env",
         "exp",
-        "proc",
         "unev",
         "val",
     )
@@ -693,20 +729,62 @@ class Registers:
         for attr in self.__slots__:
             setattr(self, attr, EL)
 
+    def get(self):
+        return dict((k, getattr(self, k)) for k in self.__slots__)
+
+    def set(self, x):
+        for attr in self.__slots__:
+            setattr(self, attr, x[attr])
+
+    def go(self, value=SENTINEL):
+        if value is not SENTINEL:
+            self.val = value
+        return bounce(self.cont)
+
 
 r = Registers()
 
 
 ## }}}
-## {{{ global stack
+## {{{ unpack argl -> []
 
 
-stack = Stack()
+def unpack(n):
+    args = r.argl
+    ret = []
+    for _ in range(n):
+        if args is EL:
+            raise TypeError(f"not enough args, need {n}")
+        ret.append(args[0])
+        args = args[1]
+    if args is not EL:
+        raise TypeError(f"too many args, need {n}")
+    return ret
 
 
 ## }}}
+## {{{ continuation
 
-## {{{ lambda
+
+class Continuation:
+    ## pylint: disable=too-few-public-methods
+
+    __slots__ = ("c", "r", "s")
+
+    def __init__(self, continuation):
+        self.c = continuation
+        self.r = r.get()
+        self.s = stack.get()
+
+    def __call__(self):
+        (x,) = unpack(1)
+        stack.set(self.s)
+        r.set(self.r)
+        return bounce(self.c, x)  ## that's it.
+
+
+## }}}
+## {{{ lambda (argl) val
 
 
 class Lambda:
@@ -718,221 +796,222 @@ class Lambda:
         self.e = env
         self.special = False
 
-    def __call__(self, frame):
-        args = frame.x
-        p = frame.e if self.special else self.e
-        e = Environment(self.p, args, p)
-        return bounce(leval_, Frame(frame, x=self.b, e=e))
+    def __call__(self):
+        p = r.env if self.special else self.e
+        r.env = Environment(self.p, r.argl, p)
+        r.exp = self.b
+        return bounce(leval_)
 
     ###
 
-    def lambda_body_done(self, bodystr):
+    def lambda_body_done(self):
         ## pylint: disable=no-self-use
-        frame = stack.pop()
-        paramstr = frame.x
-        return bounce(frame.c, "(lambda " + paramstr + " " + bodystr + ")")
+        bodystr = r.val
+        paramstr = stack.pop()
+        r.val = "(lambda " + paramstr + " " + bodystr + ")"
+        r.cont = stack.pop()
+        return r.go()
 
-    def lambda_params_done(self, paramstr):
-        frame = stack.pop()
-        body = frame.x
-        stack.fpush(frame, x=paramstr)
-        return bounce(
-            stringify_, Frame(frame, x=body, c=self.lambda_body_done)
-        )
+    def lambda_params_done(self):
+        r.exp = stack.pop()
+        r.cont = self.lambda_body_done
+        stack.push(r.val)
+        return bounce(stringify_)
 
-    def stringify_(self, frame):
-        stack.fpush(frame, x=self.b)
-        return bounce(
-            stringify_,
-            Frame(frame, x=self.p, c=self.lambda_params_done),
-        )
-
-
-## }}}
-## {{{ continuation
-
-
-class Continuation:
-    ## pylint: disable=too-few-public-methods
-
-    __slots__ = ("c", "s")
-
-    def __init__(self, continuation):
-        self.c = continuation
-        self.s = stack.get()
-
-    def __call__(self, frame):
-        (x,) = unpack(frame.x, 1)
-        stack.set(self.s)
-        return bounce(self.c, x)  ## that's it.
+    def stringify_(self):
+        stack.push(r.cont)
+        stack.push(self.b)
+        r.exp = self.p
+        r.cont = self.lambda_params_done
+        return bounce(stringify_)
 
 
 ## }}}
-## {{{ stringify
+## {{{ stringify exp -> val
 
 
-def stringify(sexpr, env=SENTINEL):
-    e = genv if env is SENTINEL else env
-    return trampoline(stringify_, Frame(SENTINEL, x=sexpr, e=e, c=land))
+def stringify(expr):
+    r.exp = expr
+    r.cont = land
+    trampoline(stringify_)
+    return r.val
 
 
-def stringify_setup(frame, args):
-    if isinstance(args, list):
-        arg, args = args
-    else:
-        arg = args
-        args = EL
-        stack.fpush(Frame(frame, x="."))
-    stack.fpush(frame, x=args)
-    return bounce(stringify_, Frame(frame, x=arg, c=stringify_cont))
+def stringify_next_():
+    r.unev = stack.pop()
+    r.argl = stack.pop()
+
+    r.argl.enqueue(r.val)
+    r.exp, r.unev = r.unev
+    stack.push(r.argl)
+    if r.unev is EL:
+        r.cont = stringify_last_
+        return bounce(stringify_)
+
+    stack.push(r.unev)
+    return bounce(stringify_)
 
 
-def stringify_cont(value):
-    frame = stack.pop()
-    args = frame.x
-
-    if args is EL:
-        parts = [value]
-        while True:
-            f = stack.pop()
-            if f.x is SENTINEL:
-                break
-            parts.insert(0, f.x)
-        return bounce(frame.c, "(" + " ".join(parts) + ")")
-
-    stack.fpush(frame, x=value)
-    return stringify_setup(frame, args)
+def stringify_last_():
+    q = stack.pop()
+    q.enqueue(r.val)
+    h = q.head()
+    parts = []
+    while h is not EL:
+        parts.append(h[0])
+        h = h[1]
+    r.val = "(" + " ".join(parts) + ")"
+    r.cont = stack.pop()
+    return r.go()
 
 
-def stringify_(frame):
+def stringify_():
     ## pylint: disable=too-many-return-statements,too-many-locals
-    x = frame.x
+    x = r.exp
     if x is EL:
-        return bounce(frame.c, "()")
+        return r.go("()")
     if x is T:
-        return bounce(frame.c, "#t")
+        return r.go("#t")
     if isinstance(x, (Symbol, int, float, str)):
-        return bounce(frame.c, str(x))
+        return r.go(str(x))
     if isinstance(x, Lambda):
-        return bounce(x.stringify_, frame)
+        return bounce(x.stringify_)
     if isinstance(x, Continuation):
-        return bounce(frame.c, "[continuation]")
+        return r.go("[continuation]")
     if callable(x):
-        return bounce(frame.c, "[primitive]")
+        return r.go("[primitive]")
     if not isinstance(x, list):
-        return bounce(frame.c, "[opaque]")
+        return r.go("[opaque]")
 
-    stack.fpush(frame, x=SENTINEL)
+    r.exp = x[0]
+    r.unev = x[1]
+    r.argl = Queue()
 
-    return stringify_setup(frame, x)
+    stack.push(r.cont)
+    stack.push(r.argl)
+    if r.unev is EL:
+        r.cont = stringify_last_
+    else:
+        stack.push(r.unev)
+        r.cont = stringify_next_
+    return bounce(stringify_)
 
 
 ## }}}
 ## {{{ eval
 
+## XXX FFI
 
-class Regs:
-    x = SENTINEL
-    c = SENTINEL
-    e = SENTINEL
-
-
-def leval(sexpr, env=SENTINEL):
-    e = genv if env is SENTINEL else env
-    return trampoline(leval_, Frame(SENTINEL, x=sexpr, e=e, c=land))
+def leval(expr, env=SENTINEL):
+    r.exp = expr
+    r.env = genv if env is SENTINEL else env
+    r.cont = land
+    trampoline(leval_)
+    return r.val
 
 
-def eval_setup(frame, args):
-    if not isinstance(args, list):
-        raise SyntaxError("args must be a proper list")
-    arg, args = args
-    if args is EL:
-        return bounce(leval_, Frame(frame, x=arg, c=eval_last_arg))
-    stack.fpush(frame, x=args)
-    return bounce(leval_, Frame(frame, x=arg, c=eval_next_arg))
+def eval_next_():
+    r.unev = stack.pop()
+    r.argl = stack.pop()
+    r.env = stack.pop()
+
+    r.argl.enqueue(r.val)
+    r.exp, r.unev = r.unev
+
+    stack.push(r.env)
+    stack.push(r.argl)
+    if r.unev is EL:
+        r.cont = eval_last_
+    else:
+        stack.push(r.unev)
+    return bounce(leval_)
+    
+
+def eval_last_():
+    q = stack.pop()
+    q.enqueue(r.val)
+    r.argl = q.head()
+    r.env = stack.pop()
+    proc = stack.pop()
+    r.cont = stack.pop()
+    return bounce(proc)
 
 
-def eval_last_arg(value):
-    ret = [value, EL]
-    while True:
-        f = stack.pop()
-        if f.x is SENTINEL:
-            break
-        ret = [f.x, ret]
-    frame = stack.pop()
-    proc = frame.x
-    ## at this point, need to see if proc is ffi
-    if getattr(proc, "ffi", False):
-        ## should construct args as a pylist not pair but then Frame would
-        ## need a new field to hold proc all the way through. this is about
-        ## a global 5% performance hit. i care more about ffi capability
-        ## than performance. plus, this thing is slow enough already.
-        return bounce(do_ffi, Frame(frame, x=[ret, proc]))
-    return bounce(proc, Frame(frame, x=ret))
-
-
-def eval_next_arg(value):
-    frame = stack.pop()
-    args = frame.x
-
-    stack.fpush(frame, x=value)
-    return eval_setup(frame, args)
-
-
-def eval_proc_done(proc):
-    frame = stack.pop()
-    args = frame.x
-
+def eval_proc_done_():
+    proc = r.val
     if not callable(proc):  ## python func Lambda Continuation
         raise TypeError(f"expected callable, got {proc!r}")
 
+    args = stack.pop()
+    r.env = stack.pop()
+
     ## specials don't have their args evaluated
     if getattr(proc, "special", False):
-        return bounce(proc, frame)
+        r.argl = args
+        r.cont = stack.pop()
+        return bounce(proc)
 
     ## shortcut the no-args case
     if args is EL:
-        return bounce(proc, frame)
+        r.argl = EL
+        r.cont = stack.pop()
+        return bounce(proc)
 
     ## evaluate args...
+    r.exp, r.unev = args
+    r.argl = Queue()
 
-    stack.fpush(frame, x=proc)
-    stack.fpush(frame, x=SENTINEL)
+    stack.push(proc)
+    stack.push(r.env)
+    stack.push(r.argl)
 
-    return eval_setup(frame, args)
+    if r.unev is EL:
+        r.cont = eval_last_
+    else:
+        stack.push(r.unev)
+        r.cont = eval_next_
+
+    return bounce(leval_)
 
 
-def leval_(frame):
+def leval_():
     ## pylint: disable=too-many-locals
 
-    x = frame.x
+    x = r.exp
     if isinstance(x, Symbol):
-        obj = frame.e.get(x)
-        return bounce(frame.c, obj)
+        return r.go(r.env.get(x))
     if isinstance(x, list):
         op, args = x
     elif isinstance(x, Lambda):
         op = x
         args = EL
     else:
-        return bounce(frame.c, x)
+        return r.go(x)
     if isinstance(op, Symbol):
-        op = frame.e.get(op)
+        op = r.env.get(op)
         if getattr(op, "special", False):
-            return bounce(op, Frame(frame, x=args))
+            r.argl = args
+            return bounce(op)
+
+    stack.push(r.cont)
+    stack.push(r.env)
+    stack.push(args)
+
     if callable(op):
         ## primitive Lambda Continuation
-        stack.fpush(frame, x=args)
-        return bounce(eval_proc_done, op)
+        r.val = op
+        return bounce(eval_proc_done_)
+
     if not isinstance(op, list):
         raise TypeError(f"expected proc or list, got {op!r}")
 
-    stack.fpush(frame, x=args)
-    return bounce(leval_, Frame(frame, x=op, c=eval_proc_done))
+    r.cont = eval_proc_done_
+    r.exp = op
+    return bounce(leval_)
 
 
 ## }}}
-## {{{ ffi
+## {{{ XXX ffi
 
 
 def do_ffi(frame):
@@ -1059,52 +1138,7 @@ def py_list_to_lisp_list(lst):
 
 
 ## }}}
-## {{{ primitive definition decorators
 
-
-def glbl(name):
-    def wrap(func):
-        genv.set(symbol(name), func)
-        return func
-
-    return wrap
-
-
-def spcl(name):
-    def wrap(func):
-        genv.set(symbol(name), func)
-        func.special = True
-        return func
-
-    return wrap
-
-
-def ffi(name):
-    def wrap(func):
-        genv.set(symbol(name), func)
-        func.ffi = True
-        return func
-
-    return wrap
-
-
-## }}}
-## {{{ unpack
-
-
-def unpack(args, n):
-    ret = []
-    for _ in range(n):
-        if args is EL:
-            raise TypeError(f"not enough args, need {n}")
-        ret.append(args[0])
-        args = args[1]
-    if args is not EL:
-        raise TypeError(f"too many args, need {n}")
-    return ret
-
-
-## }}}
 ## {{{ special forms
 
 
@@ -1709,7 +1743,7 @@ def op_ffi_time(args):
 
 ## }}}
 
-## {{{ lisp runtime
+## {{{ XXX lisp runtime
 
 
 RUNTIME = r"""
@@ -2385,7 +2419,7 @@ RUNTIME = r"""
 """
 
 
-parse(RUNTIME, leval)
+## XXX parse(RUNTIME, leval)
 
 
 ## }}}
@@ -2393,6 +2427,8 @@ parse(RUNTIME, leval)
 
 if __name__ == "__main__":
     main()
+    assert not stack
+    print("OK")
 
 
 ## EOF
