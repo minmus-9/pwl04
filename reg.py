@@ -1143,26 +1143,30 @@ def py_list_to_lisp_list(lst):
 
 
 def op_cond_setup():
-    head, args = r.argl
-    r.argl = head
+    r.argl, args = r.argl
     predicate, consequent = unpack(2)
 
     stack.push(r.env)
     stack.push([args, consequent])
+
     r.cont = op_cond_cont
     r.exp = predicate
     return bounce(leval_)
 
 
 def op_cond_cont():
-    args, consequent = stack.pop()
+    r.argl, consequent = stack.pop()
+    r.env = stack.pop()
 
     if r.val is not EL:
         r.exp = consequent
-        return bounce(leval_, Frame(frame, x=consequent))
-    if args is EL:
-        return bounce(frame.c, EL)
-    return op_cond_setup(frame, args)
+        r.cont = stack.pop()
+        return bounce(leval_)
+    if r.argl is EL:
+        r.val = EL
+        r.cont = stack.pop()
+        return r.go()
+    return op_cond_setup()
 
 
 @spcl("cond")
