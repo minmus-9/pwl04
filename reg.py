@@ -1170,54 +1170,61 @@ def op_cond(frame):
     return op_cond_setup(frame, args)
 
 
-def op_define_cont(value):
-    frame = stack.pop()
-    sym = frame.x
-    frame.e.set(sym, value)
-    return bounce(frame.c, EL)
+def op_define_cont_():
+    sym = stack.pop()
+    r.env.set(sym, r.val)
+    r.cont = stack.pop()
+    r.val = EL
+    return r.go()
 
 
 @spcl("define")
-def op_define(frame):
-    sym, defn = unpack(frame.x, 2)
-    stack.fpush(frame, x=symcheck(sym))
-    return bounce(leval_, Frame(frame, x=defn, c=op_define_cont))
+def op_define():
+    sym, defn = unpack(2)
+    stack.push(r.cont)
+    stack.push(symcheck(sym))
+    r.exp = defn
+    r.cont = op_define_cont_
+    return bounce(leval_)
 
 
 ###
 
 
-def op_if_cont(value):
-    frame = stack.pop()
-    ca = frame.x
-    sexpr = ca[1] if value is EL else ca[0]
-    return bounce(leval_, Frame(frame, x=sexpr))
+def op_if_cont_():
+    c, a = stack.pop()
+    r.cont = stack.pop()
+    r.exp = a if r.val is EL else c
+    return bounce(leval_)
 
 
 @spcl("if")
-def op_if(frame):
-    p, c, a = unpack(frame.x, 3)
-    stack.fpush(frame, x=[c, a])
-    return bounce(leval_, Frame(frame, x=p, c=op_if_cont))
+def op_if():
+    p, c, a = unpack(3)
+    stack.push(r.cont)
+    stack.push([c, a])
+    r.exp = p
+    r.cont = op_if_cont_
+    return bounce(leval_)
 
 
 ###
 
 
 @spcl("lambda")
-def op_lambda(frame):
-    params, body = unpack(frame.x, 2)
-
+def op_lambda():
+    params, body = unpack(2)
     if not (isinstance(params, list) or params is EL):
         raise TypeError("expected param list, got {params!r}")
 
-    return bounce(frame.c, Lambda(params, body, frame.e))
+    r.val = Lambda(params, body, r.env)
+    return r.go()
 
 
 @spcl("quote")
-def op_quote(frame):
-    (x,) = unpack(frame.x, 1)
-    return bounce(frame.c, x)
+def op_quote():
+    (r.val,) = unpack(1)
+    return r.go()
 
 
 ###
@@ -1378,14 +1385,16 @@ def op_quasiquote(frame):
 ## {{{ other primitives
 
 
-def unary(frame, func):
-    (x,) = unpack(frame.x, 1)
-    return bounce(frame.c, func(x))
+def unary(func):
+    (x,) = unpack(1)
+    r.val = func(x)
+    return r.go()
 
 
-def binary(frame, func):
-    x, y = unpack(frame.x, 2)
-    return bounce(frame.c, func(x, y))
+def binary(func):
+    x, y = unpack(2)
+    r.val = func(x, y)
+    return r.go()
 
 
 @glbl(">string")
@@ -1447,12 +1456,13 @@ def op_div(frame):
 
 
 @glbl("do")
-def op_do(frame):
-    x = frame.x
+def op_do():
+    x = r.argl
     ret = EL
     while x is not EL:
         ret, x = x
-    return bounce(frame.c, ret)
+    r.val = ret
+    return r.go()
 
 
 @glbl("eq?")
@@ -1536,23 +1546,23 @@ def op_last(frame):
 
 
 @glbl("lt?")
-def op_lt(frame):
+def op_lt():
     def f(x, y):
         if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
             raise TypeError(f"expected numbers, got {x!r} and {y!r}")
         return T if x < y else EL
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("mul")
-def op_mul2(frame):
+def op_mul():
     def f(x, y):
         if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
             raise TypeError(f"expected numbers, got {x!r} and {y!r}")
         return x * y
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("nand")
@@ -1609,29 +1619,29 @@ def op_print(frame):
 
 
 @glbl("set-car!")
-def op_setcarbang(frame):
+def op_setcarbang():
     def f(x, y):
         return set_car(x, y)
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("set-cdr!")
-def op_setcdrbang(frame):
+def op_setcdrbang():
     def f(x, y):
         return set_cdr(x, y)
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("sub")
-def op_sub(frame):
+def op_sub():
     def f(x, y):
         if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
             raise TypeError(f"expected numbers, got {x!r} and {y!r}")
         return x - y
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("type")
