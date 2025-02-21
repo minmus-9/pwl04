@@ -1142,19 +1142,23 @@ def py_list_to_lisp_list(lst):
 ## {{{ special forms
 
 
-def op_cond_setup(frame, args):
-    head, args = args
-    predicate, consequent = unpack(head, 2)
+def op_cond_setup():
+    head, args = r.argl
+    r.argl = head
+    predicate, consequent = unpack(2)
 
-    stack.fpush(frame, x=[args, consequent])
-    return bounce(leval_, Frame(frame, c=op_cond_cont, x=predicate))
+    stack.push(r.env)
+    stack.push([args, consequent])
+    r.cont = op_cond_cont
+    r.exp = predicate
+    return bounce(leval_)
 
 
-def op_cond_cont(value):
-    frame = stack.pop()
-    args, consequent = frame.x
+def op_cond_cont():
+    args, consequent = stack.pop()
 
-    if value is not EL:
+    if r.val is not EL:
+        r.exp = consequent
         return bounce(leval_, Frame(frame, x=consequent))
     if args is EL:
         return bounce(frame.c, EL)
@@ -1162,12 +1166,13 @@ def op_cond_cont(value):
 
 
 @spcl("cond")
-def op_cond(frame):
-    args = frame.x
-    if args is EL:
-        return bounce(frame.c, EL)
+def op_cond():
+    if r.argl is EL:
+        r.val = EL
+        return r.go()
 
-    return op_cond_setup(frame, args)
+    stack.push(r.cont)
+    return op_cond_setup()
 
 
 def op_define_cont_():
