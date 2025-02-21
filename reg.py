@@ -584,8 +584,10 @@ def repl(callback):
         try:
             p.feed(x)
         except SystemExit as exc:
+            stack.clear()
             stop, rc = True, exc.args[0]
         except:  ## pylint: disable=bare-except
+            stack.clear()
             p = Parser(callback)
             traceback.print_exception(*sys.exc_info())
 
@@ -625,28 +627,12 @@ def main(force_repl=False):
             break
         load(filename, callback=callback)
         stop = True
-    if force_repl or not stop:
-        raise SystemExit(repl(callback))
-    print(dict((k, v) for (k, v) in Stats.__dict__.items() if not k.startswith("_")))
-    assert not stack
-
-
-## }}}
-## {{{ stack frame
-
-
-class Frame:
-    ## pylint: disable=too-few-public-methods
-
-    __slots__ = ("x", "c", "e")
-
-    def __init__(self, f, x=None, c=None, e=None):
-        self.x = f.x if x is None else x
-        self.c = f.c if c is None else c
-        self.e = f.e if e is None else e
-
-    def __repr__(self):
-        return f"{self.__class__.__name__}({self.x}, {self.c}, {self.e})"
+    try:
+        if force_repl or not stop:
+            raise SystemExit(repl(callback))
+    finally:
+        print(dict((k, v) for (k, v) in Stats.__dict__.items() if not k.startswith("_")))
+        assert not stack
 
 
 ## }}}
@@ -1181,6 +1167,7 @@ def op_cond():
 
 def op_define_cont_():
     sym = stack.pop()
+    r.env = stack.pop()
     r.env.set(sym, r.val)
     r.cont = stack.pop()
     r.val = EL
@@ -1191,6 +1178,7 @@ def op_define_cont_():
 def op_define():
     sym, defn = unpack(2)
     stack.push(r.cont)
+    stack.push(r.env)
     stack.push(symcheck(sym))
     r.exp = defn
     r.cont = op_define_cont_
@@ -1239,18 +1227,24 @@ def op_quote():
 ###
 
 
-def op_setbang_cont(defn):
-    frame = stack.pop()
-    sym = frame.x
-    frame.e.setbang(sym, defn)
-    return bounce(frame.c, EL)
+def op_setbang_cont():
+    sym = stack.pop()
+    r.env = stack.pop()
+    r.cont = stack.pop()
+    r.env.setbang(sym, r.val)
+    return r.go()
 
 
 @spcl("set!")
-def op_setbang(frame):
-    sym, defn = unpack(frame.x, 2)
-    stack.fpush(frame, x=symcheck(sym))
-    return bounce(leval_, Frame(frame, x=defn, c=op_setbang_cont))
+def op_setbang():
+    sym, defn = unpack(2)
+
+    stack.push(r.cont)
+    stack.push(r.env)
+    stack.push(sym)
+    r.exp = defn
+    r.cont = op_setbang_cont
+    return bounce(leval_)
 
 
 ###
