@@ -882,7 +882,6 @@ def stringify_():
 ## }}}
 ## {{{ eval
 
-## XXX FFI
 
 def leval(expr, env=SENTINEL):
     r.exp = expr
@@ -998,7 +997,7 @@ def leval_():
 
 
 ## }}}
-## {{{ XXX ffi
+## {{{ ffi
 
 
 def do_ffi():
@@ -1009,83 +1008,79 @@ def do_ffi():
         r.argl = []
         return bounce(ffi_args_done)
 
+    r.cont = ffi_args_done
     r.exp = r.argl
-    return bounce(
-        lisp_value_to_py_value_, Frame(frame, x=args, c=ffi_args_done)
-    )
+    return bounce(lisp_value_to_py_value_)
 
 
 def lisp_value_to_py_value(x):
-    return trampoline(lisp_value_to_py_value_, Frame(SENTINEL, x=x, c=land))
+    r.cont = land
+    r.exp = x
+    return trampoline(lisp_value_to_py_value_)
 
 
-def lv2pv_setup(frame, args):
+def lv2pv_setup(args):
     arg, args = args
-    stack.fpush(frame, x=args)
-    return bounce(
-        lisp_value_to_py_value_, Frame(frame, x=arg, c=lv2pv_next_arg)
-    )
+    stack.push(args)
+    r.cont = lv2pv_next_arg
+    r.exp = arg
+    return bounce(lisp_value_to_py_value_)
 
 
-def lv2pv_next_arg(value):
-    frame = stack.pop()
-    args = frame.x
+def lv2pv_next_arg():
+    args = stack.pop()
+    argl = stack.pop()
+    argl.append(r.val)
 
     if args is EL:
-        ret = [value]
-        while True:
-            f = stack.pop()
-            if f.x is SENTINEL:
-                break
-            ret.insert(0, f.x)
-        return bounce(frame.c, ret)
+        r.cont = stack.pop()
+        return r.go(argl)
 
-    stack.fpush(frame, x=value)
-    return lv2pv_setup(frame, args)
+    stack.push(argl)
+    return lv2pv_setup(args)
 
 
-def lisp_value_to_py_value_(frame):
-    x = frame.x
+def lisp_value_to_py_value_():
+    x = r.exp
     if x is EL:
         x = None
     elif x is T:
         x = True
     if not isinstance(x, list):
-        return bounce(frame.c, x)
+        return r.go(x)
 
-    stack.fpush(frame, x=SENTINEL)
-    return lv2pv_setup(frame, x)
+    stack.push(r.cont)
+    stack.push([])
+    return lv2pv_setup(x)
 
 
 def py_value_to_lisp_value(x):
-    r.exp = x
     r.cont = land
+    r.exp = x
     return trampoline(py_value_to_lisp_value_)
 
 
-def pv2lv_setup(frame, args):
+def pv2lv_setup(args):
     arg = args.pop(0)
-    stack.fpush(frame, x=args)
-    return bounce(
-        py_value_to_lisp_value_, Frame(frame, x=arg, c=pv2lv_next_arg)
-    )
+    stack.push(args)
+
+    r.cont = pv2lv_next_arg
+    r.exp = arg
+    return bounce(py_value_to_lisp_value_)
 
 
-def pv2lv_next_arg(value):
-    frame = stack.pop()
-    args = frame.x
+def pv2lv_next_arg():
+    args = stack.pop()
+    argl = stack.pop()
+    argl.enqueue(r.val)
 
     if not args:
-        ret = [value, EL]
-        while True:
-            f = stack.pop()
-            if f.x is SENTINEL:
-                break
-            ret = [f.x, ret]
-        return bounce(frame.c, ret)
+        r.cont = stack.pop()
+        r.val = argl.head()
+        return r.go()
 
-    stack.fpush(frame, x=value)
-    return pv2lv_setup(frame, args)
+    stack.push(argl)
+    return pv2lv_setup(args)
 
 
 def py_value_to_lisp_value_():
@@ -1100,14 +1095,15 @@ def py_value_to_lisp_value_():
         return r.go(EL)
 
     stack.push(r.cont)
-    return pv2lv_setup(frame, list(x))
+    stack.push(Queue())
+    return pv2lv_setup(list(x))
 
 
 def ffi_args_done():
     func = stack.pop()
     r.cont = stack.pop()
 
-    r.exp = func(r.argl)
+    r.exp = func(r.val)
 
     return bounce(py_value_to_lisp_value_)
 
@@ -1128,7 +1124,6 @@ def py_list_to_lisp_list(lst):
 
 
 ## }}}
-
 ## {{{ special forms
 
 
