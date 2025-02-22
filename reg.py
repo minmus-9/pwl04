@@ -77,8 +77,8 @@ def trampoline(func):
     try:
         while True:
             func = func()
-    except _Land as exc:
-        return
+    except _Land:
+        return r.val
 
 
 def bounce(func):
@@ -509,7 +509,7 @@ class Parser:
                 self.add(l)
             else:
                 self.callback(l)
-        elif ttype == s.T_INT or ttype == s.T_FLOAT or ttype == s.T_STRING:
+        elif ttype in (s.T_INT, s.T_FLOAT, s.T_STRING):
             self.add(token)
         elif ttype in (s.T_TICK, s.T_COMMA, s.T_COMMA_AT, s.T_BACKTICK):
             self.qstack.append(self.QT[token])
@@ -679,14 +679,6 @@ class Stack:
     def set(self, value):
         self.s = value
 
-    ## avoid inheritance for performance:
-
-    def fpush(self, frame, x=None, c=None, e=None):
-        Stats.n += 1
-        Stats.npush += 1
-        Stats.depth = max(Stats.depth, Stats.n)
-        self.s = [Frame(frame, x, c, e), self.s]
-
 
 ## }}}
 ## }}}
@@ -712,8 +704,12 @@ class Registers:
     )
 
     def __init__(self):
-        for attr in self.__slots__:
-            setattr(self, attr, EL)
+        self.argl = EL
+        self.cont = EL
+        self.env = EL
+        self.exp = EL
+        self.unev = EL
+        self.val = EL
 
     def get(self):
         return dict((k, getattr(self, k)) for k in self.__slots__)
@@ -766,11 +762,12 @@ class Continuation:
         (x,) = unpack(1)
         stack.set(self.s)
         r.set(self.r)
-        return bounce(self.c, x)  ## that's it.
+        r.val = x
+        return r.go()  ## that's it.
 
 
 ## }}}
-## {{{ lambda (argl) val
+## {{{ lambda (argl) -> val
 
 
 class Lambda:
@@ -819,8 +816,7 @@ class Lambda:
 def stringify(expr):
     r.exp = expr
     r.cont = land
-    trampoline(stringify_)
-    return r.val
+    return trampoline(stringify_)
 
 
 def stringify_next_():
@@ -892,8 +888,7 @@ def leval(expr, env=SENTINEL):
     r.exp = expr
     r.env = genv if env is SENTINEL else env
     r.cont = land
-    trampoline(leval_)
-    return r.val
+    return trampoline(leval_)
 
 
 def eval_next_():
@@ -911,7 +906,7 @@ def eval_next_():
     else:
         stack.push(r.unev)
     return bounce(leval_)
-    
+
 
 def eval_last_():
     q = stack.pop()
@@ -920,6 +915,9 @@ def eval_last_():
     r.env = stack.pop()
     proc = stack.pop()
     r.cont = stack.pop()
+    if getattr(proc, "ffi", False):
+        stack.push(proc)
+        return bounce(do_ffi)
     return bounce(proc)
 
 
@@ -941,6 +939,9 @@ def eval_proc_done_():
     if args is EL:
         r.argl = EL
         r.cont = stack.pop()
+        if getattr(proc, "ffi", False):
+            stack.push(proc)
+            return bounce(do_ffi)
         return bounce(proc)
 
     ## evaluate args...
@@ -1000,7 +1001,7 @@ def leval_():
 ## {{{ XXX ffi
 
 
-def do_ffi(frame):
+def do_ffi():
     af = frame.x
     args, func = af
     stack.fpush(frame, x=func)
@@ -1250,46 +1251,54 @@ def op_setbang():
 ###
 
 
-def op_special_cont(value):
-    frame = stack.pop()
-    sym = frame.x
-    if not isinstance(value, Lambda):
-        raise TypeError(f"expected lambda, got {value!r}")
-    value.special = True
-    frame.e.set(sym, value)
-    return bounce(frame.c, EL)
+def op_special_cont():
+    sym = stack.pop()
+    r.env = stack.pop()
+    r.cont = stack.pop()
+    if not isinstance(r.val, Lambda):
+        raise TypeError(f"expected lambda, got {r.val!r}")
+    r.val.special = True
+    r.env.set(sym, r.val)
+    r.val = EL
+    return r.go()
 
 
 @spcl("special")
-def op_special(frame):
-    sym, defn = unpack(frame.x, 2)
-
-    stack.fpush(frame, x=symcheck(sym))
-    return bounce(leval_, Frame(frame, x=defn, c=op_special_cont))
+def op_special():
+    sym, defn = unpack(2)
+    stack.push(r.cont)
+    stack.push(r.env)
+    stack.push(symcheck(sym))
+    r.exp = defn
+    r.cont = op_special_cont
+    return bounce(leval_)
 
 
 ###
 
 
 @spcl("trap")
-def op_trap(frame):
-    (x,) = unpack(frame.x, 1)
+def op_trap():
+    (x,) = unpack(1)
     ok = T
+    stack.push(r.cont)
     try:
         ## this has to be recursive because you can't pass
         ## exceptions across the trampoline. there is a chance
         ## of blowing the python stack here if you do a deeply
         ## recursive trap.
-        res = leval(x, frame.e)
+        res = leval(x, r.env)
     except:  ## pylint: disable=bare-except
         ok = EL
         t, v = sys.exc_info()[:2]
         res = f"{t.__name__}: {str(v)}"
-    return bounce(frame.c, cons(ok, cons(res, EL)))
+    r.val = [ok, [res, EL]]
+    r.cont = stack.pop()
+    return r.go()
 
 
 ## }}}
-## {{{ quasiquote
+## {{{ XXX quasiquote
 
 
 def qq_list_setup(frame, form):
@@ -1379,8 +1388,8 @@ def qq(frame):
 
 
 @spcl("quasiquote")
-def op_quasiquote(frame):
-    (form,) = unpack(frame.x, 1)
+def op_quasiquote():
+    (form,) = unpack(1)
     return bounce(qq, Frame(frame, x=form))
 
 
@@ -1400,62 +1409,57 @@ def binary(func):
     return r.go()
 
 
-@glbl(">string")
-def op_to_string(frame):
-    (x,) = unpack(frame.x, 1)
-    return bounce(stringify_, Frame(frame, x=x))
-
-
 @glbl("apply")
-def op_apply(frame):
-    proc, args = unpack(frame.x, 2)
+def op_apply():
+    proc, args = unpack(2)
     if not callable(proc):
         raise TypeError(f"expected callable, got {proc!r}")
-    return bounce(proc, Frame(frame, x=args))
+    r.argl = args
+    return bounce(proc)
 
 
 @glbl("atom?")
-def op_atom(frame):
+def op_atom():
     def f(x):
         return T if is_atom(x) else EL
 
-    return unary(frame, f)
+    return unary(f)
 
 
 @glbl("call/cc")
 @glbl("call-with-current-continuation")
-def op_callcc(frame):
-    (x,) = unpack(frame.x, 1)
+def op_callcc():
+    (x,) = unpack(1)
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
-    cc = Continuation(frame.c)
-    arg = [cc, EL]
-    return bounce(x, Frame(frame, x=arg))
+    cc = Continuation(r.cont)
+    r.argl = [cc, EL]
+    return bounce(x)
 
 
 @glbl("car")
-def op_car(frame):
-    return unary(frame, car)
+def op_car():
+    return unary(car)
 
 
 @glbl("cdr")
-def op_cdr(frame):
-    return unary(frame, cdr)
+def op_cdr():
+    return unary(cdr)
 
 
 @glbl("cons")
-def op_cons(frame):
-    return binary(frame, cons)
+def op_cons():
+    return binary(cons)
 
 
 @glbl("div")
-def op_div(frame):
+def op_div():
     def f(x, y):
         if isinstance(x, int) and isinstance(y, int):
             return x // y
         return x / y
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("do")
@@ -1469,34 +1473,34 @@ def op_do():
 
 
 @glbl("eq?")
-def op_eq(frame):
+def op_eq():
     def f(x, y):
         return T if eq(x, y) else EL
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("equal?")
-def op_equal(frame):
+def op_equal():
     def f(x, y):
         if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
             raise TypeError(f"expected numbers, got {x!r} {y!r}")
 
         return T if x == y else EL
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("error")
-def op_error(frame):
-    (x,) = unpack(frame.x, 1)
+def op_error():
+    (x,) = unpack(1)
     raise LispError(x)
 
 
 @glbl("eval")
-def op_eval(frame):
+def op_eval():
 
-    args = frame.x
+    args = r.argl
     if args is EL:
         raise TypeError("need at least one arg")
     x, args = args
@@ -1513,39 +1517,44 @@ def op_eval(frame):
         p.feed(x)
         p.feed(None)
         x = l[-1] if l else EL
-    e = frame.e
+    e = r.env
     for _ in range(n_up):
         if e is SENTINEL:
             raise ValueError(f"cannot go up {n_up} levels")
         e = e.up()
-    return bounce(leval_, Frame(frame, x=x, e=e))
+    r.exp = x
+    r.env = e
+    return bounce(leval_)
 
 
 ###
 
 
-def op_exit_cont(value):
-    raise SystemExit(value)
+def op_exit_cont():
+    raise SystemExit(r.val)
 
 
 @glbl("exit")
-def op_exit(frame):
-    (x,) = unpack(frame.x, 1)
+def op_exit():
+    (x,) = unpack(1)
     if isinstance(x, int):
         raise SystemExit(x)
-    return bounce(stringify_, Frame(frame, x=x, c=op_exit_cont))
+    r.exp = x
+    r.cont = op_exit_cont
+    return bounce(stringify_)
 
 
 ###
 
 
 @glbl("last")
-def op_last(frame):
-    (x,) = unpack(frame.x, 1)
+def op_last():
+    (x,) = unpack(1)
     ret = EL
     while x is not EL:
         ret, x = x
-    return bounce(frame.c, ret)
+    r.val = ret
+    return r.go()
 
 
 @glbl("lt?")
@@ -1569,53 +1578,59 @@ def op_mul():
 
 
 @glbl("nand")
-def op_nand(frame):
+def op_nand():
     def f(x, y):
         if not (isinstance(x, int) and isinstance(y, int)):
             raise TypeError(f"expected integers, got {x!r} and {y!r}")
         return ~(x & y)
 
-    return binary(frame, f)
+    return binary(f)
 
 
 @glbl("null?")
-def op_null(frame):
-    (x,) = unpack(frame.x, 1)
-    return bounce(frame.c, T if x is EL else EL)
+def op_null():
+    (x,) = unpack(1)
+    r.val = T if x is EL else EL
+    return r.go()
 
 
 ###
 
 
-def op_print_cont(value):
-    frame = stack.pop()
-    args = frame.x
+def op_print_cont():
+    args = stack.pop()
 
     if args is EL:
-        print(value)
-        return bounce(frame.c, EL)
-    print(value, end=" ")
+        print(r.val)
+        r.val = EL
+        r.cont = stack.pop()
+        return r.go()
+    print(r.val, end=" ")
 
     arg, args = args
 
-    stack.fpush(frame, x=args)
-    return bounce(stringify_, Frame(frame, x=arg, c=op_print_cont))
+    stack.push(args)
+    r.exp = arg
+    r.cont = op_print_cont
+    return bounce(stringify_)
 
 
 @glbl("print")
-def op_print(frame):
-    args = frame.x
-
-    ## NB we know args is a well-formed list because eval() created it
+def op_print():
+    args = r.argl
 
     if args is EL:
         print()
-        return bounce(frame.c, EL)
+        r.val = EL
+        return r.go()
 
     arg, args = args
 
-    stack.fpush(frame, x=args)
-    return bounce(stringify_, Frame(frame, x=arg, c=op_print_cont))
+    stack.push(r.cont)
+    stack.push(args)
+    r.exp = arg
+    r.cont = op_print_cont
+    return bounce(stringify_)
 
 
 ###
@@ -1648,7 +1663,7 @@ def op_sub():
 
 
 @glbl("type")
-def op_type(frame):
+def op_type():
     def f(x):
         ## pylint: disable=too-many-return-statements
         if x is EL:
@@ -1673,28 +1688,39 @@ def op_type(frame):
             return symbol("primitive")
         return symbol("opaque")
 
-    return unary(frame, f)
+    return unary(f)
 
 
 ###
 
 
-def op_while_cont(value):
-    frame = stack.top()
-    if value is EL:
-        stack.pop()
-        return bounce(frame.c, EL)
-    return bounce(leval_, Frame(frame, c=op_while_cont))
+def op_while_cont():
+    r.env = stack.pop()
+    x = stack.top()
+
+    if r.val is EL:
+        stack.pop()  ## x
+        r.cont = stack.pop()
+        r.val = EL
+        return r.go()
+    stack.push(r.env)
+    r.exp = x
+    r.cont = op_while_cont
+    return bounce(leval_)
 
 
 @glbl("while")
-def op_while(frame):
-    (x,) = unpack(frame.x, 1)
+def op_while():
+    (x,) = unpack(1)
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
 
-    stack.fpush(frame, x=x)
-    return bounce(leval_, Frame(frame, x=x, c=op_while_cont))
+    stack.push(r.cont)
+    stack.push(x)
+    stack.push(r.env)
+    r.exp = x
+    r.cont = op_while_cont
+    return bounce(leval_)
 
 
 ## }}}

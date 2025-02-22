@@ -868,6 +868,7 @@ def eval_proc_done(proc):
 
     ## shortcut the no-args case
     if args is EL:
+        ## XXX need to handle ffi here
         return bounce(proc, frame)
 
     ## evaluate args...
