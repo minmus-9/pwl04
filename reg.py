@@ -636,7 +636,7 @@ def main(force_repl=False):
 
 
 ## }}}
-## {{{ stack
+## {{{ XXX stack
 
 class Stats:
     npush = 0
@@ -916,7 +916,7 @@ def eval_last_():
     proc = stack.pop()
     r.cont = stack.pop()
     if getattr(proc, "ffi", False):
-        stack.push(proc)
+        r.exp = proc
         return bounce(do_ffi)
     return bounce(proc)
 
@@ -940,7 +940,7 @@ def eval_proc_done_():
         r.argl = EL
         r.cont = stack.pop()
         if getattr(proc, "ffi", False):
-            stack.push(proc)
+            r.exp = proc
             return bounce(do_ffi)
         return bounce(proc)
 
@@ -1002,13 +1002,14 @@ def leval_():
 
 
 def do_ffi():
-    af = frame.x
-    args, func = af
-    stack.fpush(frame, x=func)
+    stack.push(r.cont)
+    stack.push(r.exp)  ## proc
 
-    if args is EL:
-        return bounce(ffi_args_done, [])
+    if r.argl is EL:
+        r.argl = []
+        return bounce(ffi_args_done)
 
+    r.exp = r.argl
     return bounce(
         lisp_value_to_py_value_, Frame(frame, x=args, c=ffi_args_done)
     )
@@ -1057,7 +1058,9 @@ def lisp_value_to_py_value_(frame):
 
 
 def py_value_to_lisp_value(x):
-    return trampoline(py_value_to_lisp_value_, Frame(SENTINEL, x=x, c=land))
+    r.exp = x
+    r.cont = land
+    return trampoline(py_value_to_lisp_value_)
 
 
 def pv2lv_setup(frame, args):
@@ -1085,28 +1088,28 @@ def pv2lv_next_arg(value):
     return pv2lv_setup(frame, args)
 
 
-def py_value_to_lisp_value_(frame):
-    x = frame.x
+def py_value_to_lisp_value_():
+    x = r.exp
     if x is None or x is False:
         x = EL
     elif x is True:
         x = T
     if not isinstance(x, (list, tuple)):
-        return bounce(frame.c, x)
+        return r.go(x)
     if not x:
-        return bounce(frame.c, EL)
+        return r.go(EL)
 
-    stack.fpush(frame, x=SENTINEL)
+    stack.push(r.cont)
     return pv2lv_setup(frame, list(x))
 
 
-def ffi_args_done(args):
-    frame = stack.pop()
-    func = frame.x
+def ffi_args_done():
+    func = stack.pop()
+    r.cont = stack.pop()
 
-    ret = func(args)
+    r.exp = func(r.argl)
 
-    return bounce(py_value_to_lisp_value_, Frame(frame, x=ret))
+    return bounce(py_value_to_lisp_value_)
 
 
 def lisp_list_to_py_list(lst):
