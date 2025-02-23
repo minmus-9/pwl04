@@ -597,8 +597,6 @@ def main(force_repl=False):
         stop = True
     if force_repl or not stop:
         raise SystemExit(repl(callback))
-    print(dict((k, v) for (k, v) in Stats.__dict__.items() if not k.startswith("_")))
-    assert not stack
 
 
 ## }}}
@@ -622,12 +620,6 @@ class Frame:
 ## }}}
 ## {{{ stack
 
-class Stats:
-    npush = 0
-    npop = 0
-    n = 0
-    depth = 0
-
 class Stack:
     __slots__ = ("s",)
 
@@ -641,14 +633,9 @@ class Stack:
         self.s = EL
 
     def push(self, x):
-        Stats.n += 1
-        Stats.npush += 1
-        Stats.depth = max(Stats.depth, Stats.n)
         self.s = [x, self.s]
 
     def pop(self):
-        Stats.npop += 1
-        Stats.n -= 1
         ret, self.s = self.s
         return ret
 
@@ -666,9 +653,6 @@ class Stack:
     ## avoid inheritance for performance:
 
     def fpush(self, frame, x=None, c=None, e=None):
-        Stats.n += 1
-        Stats.npush += 1
-        Stats.depth = max(Stats.depth, Stats.n)
         self.s = [Frame(frame, x, c, e), self.s]
 
 
@@ -1230,7 +1214,10 @@ def qq_list_setup(frame, form):
     if not (isinstance(form, list) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
     stack.fpush(frame, x=form)
-    return bounce(qq_list_next, Frame(frame, x=elt, c=qq_list_cont))
+    if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
+        _, x = unpack(elt, 2)
+        return bounce(leval_, Frame(frame, x=x, c=qq_spliced))
+    return bounce(qq, Frame(frame, x=elt, c=qq_list_cont))
 
 
 def qq_finish(frame, value):
@@ -1272,15 +1259,6 @@ def qq_spliced(value):
         stack.fpush(frame, x=elt)
 
     raise RuntimeError("logs in the bedpan")
-
-
-def qq_list_next(frame):
-    elt = frame.x
-
-    if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
-        _, x = unpack(elt, 2)
-        return bounce(leval_, Frame(frame, x=x, c=qq_spliced))
-    return bounce(qq, Frame(frame, x=elt, c=qq_list_cont))
 
 
 def qq_list(frame):
