@@ -791,12 +791,6 @@ def stringify_(frame):
 ## {{{ eval
 
 
-class Regs:
-    x = SENTINEL
-    c = SENTINEL
-    e = SENTINEL
-
-
 def leval(sexpr, env=SENTINEL):
     e = genv if env is SENTINEL else env
     return trampoline(leval_, Frame(SENTINEL, x=sexpr, e=e, c=land))

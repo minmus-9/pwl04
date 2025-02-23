@@ -36,7 +36,6 @@ import traceback
 
 __all__ = (
     "EL",
-    "Frame",
     "LispError",
     "Symbol",
     "T",
@@ -65,7 +64,7 @@ __all__ = (
 
 ## }}}
 
-## {{{ core
+## {{{ XXX core
 ## {{{ trampoline
 
 
@@ -891,27 +890,30 @@ def leval(expr, env=SENTINEL):
 
 
 def eval_next_():
-    r.unev = stack.pop()
-    r.argl = stack.pop()
+    args = stack.pop()
     r.env = stack.pop()
 
-    r.argl.enqueue(r.val)
-    r.exp, r.unev = r.unev
+    stack.push(r.val)
+    r.exp, args = args
 
     stack.push(r.env)
-    stack.push(r.argl)
-    if r.unev is EL:
+    if args is EL:
         r.cont = eval_last_
     else:
-        stack.push(r.unev)
+        stack.push(args)
     return bounce(leval_)
 
 
 def eval_last_():
-    q = stack.pop()
-    q.enqueue(r.val)
-    r.argl = q.head()
     r.env = stack.pop()
+
+    ret = [r.val, EL]
+    while True:
+        x = stack.pop()
+        if x is SENTINEL:
+            break
+        ret = [x, ret]
+    r.argl = ret
     proc = stack.pop()
     r.cont = stack.pop()
     if getattr(proc, "ffi", False):
@@ -930,32 +932,31 @@ def eval_proc_done_():
 
     ## specials don't have their args evaluated
     if getattr(proc, "special", False):
-        r.argl = args
         r.cont = stack.pop()
+        r.argl = args
         return bounce(proc)
 
     ## shortcut the no-args case
     if args is EL:
-        r.argl = EL
         r.cont = stack.pop()
+        r.argl = EL
         if getattr(proc, "ffi", False):
             r.exp = proc
             return bounce(do_ffi)
         return bounce(proc)
 
     ## evaluate args...
-    r.exp, r.unev = args
-    r.argl = Queue()
+    r.exp, args = args
 
     stack.push(proc)
+    stack.push(SENTINEL)
     stack.push(r.env)
-    stack.push(r.argl)
 
-    if r.unev is EL:
+    if args is EL:
         r.cont = eval_last_
     else:
-        stack.push(r.unev)
         r.cont = eval_next_
+        stack.push(args)
 
     return bounce(leval_)
 
@@ -1304,9 +1305,17 @@ def qq_list_setup(form):
     if not (isinstance(form, list) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
     stack.push(form)
+    if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
+        r.argl = elt
+        _, x = unpack(2)
+        stack.push(r.cont)
+        stack.push(r.env)
+        r.cont = qq_spliced
+        r.exp = x
+        return bounce(leval_)
     r.cont = qq_list_cont
     r.exp = elt
-    return bounce(qq_list_next)
+    return bounce(qq)
 
 
 def qq_finish(value):
@@ -1331,6 +1340,7 @@ def qq_list_cont():
 
 def qq_spliced():
     r.env = stack.pop()
+    r.cont = stack.pop()
     form = stack.pop()
     value = r.val
 
@@ -1348,21 +1358,6 @@ def qq_spliced():
         stack.top().enqueue(elt)
 
     raise RuntimeError("logs in the bedpan")
-
-
-def qq_list_next():
-    elt = r.exp
-
-    if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
-        r.argl = elt
-        _, x = unpack(2)
-        stack.push(r.env)
-        r.cont = qq_spliced
-        r.exp = x
-        return bounce(leval_)
-    r.cont = qq_list_cont
-    r.exp = elt
-    return bounce(qq)
 
 
 def qq_list():
@@ -2350,23 +2345,6 @@ RUNTIME = r"""
     (define c (call/cc (lambda (cc) cc)))
     (f)
     (c c)
-)
-
-;; call f in a loop forever or until (break) is called
-(def (loop-with-break f)
-    (define brk ())
-    (def (break) (brk ()))
-    (def (g)
-        (define c (call/cc (lambda (cc) cc)))
-        (f break)
-        (c c)
-    )
-    (set! brk (call/cc (lambda (cc) cc)))
-    (if
-        brk
-        (g)
-        ()
-    )
 )
 
 ;; call f a given number of times as (f counter)
