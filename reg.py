@@ -1319,10 +1319,13 @@ def qq_list_setup(form):
 
 
 def qq_finish(value):
-    q = stack.pop()
-    if value is not SENTINEL:
-        q.enqueue(value)
-    r.val = q.head()
+    ret = EL if value is SENTINEL else [value, EL]
+    while True:
+        x = stack.pop()
+        if x is SENTINEL:
+            break
+        ret = [x, ret]
+    r.val = ret
     r.cont = stack.pop()
     return r.go()
 
@@ -1333,7 +1336,7 @@ def qq_list_cont():
     if form is EL:
         return qq_finish(r.val)
 
-    stack.top().enqueue(r.val)
+    stack.push(r.val)
 
     return qq_list_setup(form)
 
@@ -1355,7 +1358,7 @@ def qq_spliced():
             stack.push(form)
             r.val = elt
             return bounce(qq_list_cont)
-        stack.top().enqueue(elt)
+        stack.push(elt)
 
     raise RuntimeError("logs in the bedpan")
 
@@ -1378,7 +1381,7 @@ def qq_list():
         raise LispError("cannot use unquote-splicing here")
 
     stack.push(r.cont)
-    stack.push(Queue())
+    stack.push(SENTINEL)
 
     return qq_list_setup(form)
 
@@ -1395,6 +1398,7 @@ def qq_end():
 
     r.exp = r.val
     r.env = r.env.up()  ## NB we know we have an enclosing env
+    print(r.cont, r.val, "//", r.env.d)
     return bounce(leval_)
 
 
@@ -2352,7 +2356,6 @@ RUNTIME = r"""
     (if (lt? step 1) (error "step must be positive") ())
     (define i start)
     (define c (call/cc (lambda (cc) cc)))
-    (print f c)
     (if
         (lt? i stop)
         ( do
