@@ -253,14 +253,14 @@ class Environment:
                 d[p] = args
                 return
             elif args is EL:
-                raise TypeError("not enough args")
+                raise TypeError("not enough args " + str(d))
             else:
                 d[p] = args[0]
                 args = args[1]
         if variadic:
             raise SyntaxError("'&' ends param list")
         if args is not EL:
-            raise TypeError("too many args")
+            raise TypeError("too many args " + str(d) + " " + repr(args))
 
     def get(self, sym):
         symcheck(sym)
@@ -1299,96 +1299,118 @@ def op_trap():
 ## {{{ XXX quasiquote
 
 
-def qq_list_setup(frame, form):
+def qq_list_setup(form):
     elt, form = form
     if not (isinstance(form, list) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
-    stack.fpush(frame, x=form)
-    return bounce(qq_list_next, Frame(frame, x=elt, c=qq_list_cont))
+    stack.push(form)
+    r.cont = qq_list_cont
+    r.exp = elt
+    return bounce(qq_list_next)
 
 
-def qq_finish(frame, value):
-    res = EL if value is SENTINEL else [value, EL]
-    while True:
-        f = stack.pop()
-        if f.x is SENTINEL:
-            break
-        res = [f.x, res]
-    return bounce(frame.c, res)
+def qq_finish(value):
+    q = stack.pop()
+    if value is not SENTINEL:
+        q.enqueue(value)
+    r.val = q.head()
+    r.cont = stack.pop()
+    return r.go()
 
 
-def qq_list_cont(value):
-    frame = stack.pop()
-    form = frame.x
+def qq_list_cont():
+    form = stack.pop()
 
     if form is EL:
-        return bounce(qq_finish, frame, value)
+        return qq_finish(r.val)
 
-    stack.fpush(frame, x=value)
+    stack.top().enqueue(r.val)
 
-    return qq_list_setup(frame, form)
+    return qq_list_setup(form)
 
 
-def qq_spliced(value):
-    frame = stack.pop()
-    form = frame.x
+def qq_spliced():
+    r.env = stack.pop()
+    form = stack.pop()
+    value = r.val
 
     if value is EL:
         if form is EL:
-            return bounce(qq_finish, frame, SENTINEL)
-        return qq_list_setup(frame, form)
+            return qq_finish(SENTINEL)
+        return qq_list_setup(form)
 
     while value is not EL:
         elt, value = value
         if value is EL:
-            stack.fpush(frame, x=form)
-            return bounce(qq_list_cont, elt)
-        stack.fpush(frame, x=elt)
+            stack.push(form)
+            r.val = elt
+            return bounce(qq_list_cont)
+        stack.top().enqueue(elt)
 
     raise RuntimeError("logs in the bedpan")
 
 
-def qq_list_next(frame):
-    elt = frame.x
+def qq_list_next():
+    elt = r.exp
 
     if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
-        _, x = unpack(elt, 2)
-        return bounce(leval_, Frame(frame, x=x, c=qq_spliced))
-    return bounce(qq, Frame(frame, x=elt, c=qq_list_cont))
+        r.argl = elt
+        _, x = unpack(2)
+        stack.push(r.env)
+        r.cont = qq_spliced
+        r.exp = x
+        return bounce(leval_)
+    r.cont = qq_list_cont
+    r.exp = elt
+    return bounce(qq)
 
 
-def qq_list(frame):
-    form = frame.x
+def qq_list():
+    form = r.exp
     app = form[0]
 
+    r.argl = form
     if eq(app, symbol("quasiquote")):
-        _, x = unpack(form, 2)
-        return bounce(qq, Frame(frame, x=x))
+        _, r.exp = unpack(2)
+        return bounce(qq)
 
     if eq(app, symbol("unquote")):
-        _, x = unpack(form, 2)
-        return bounce(leval_, Frame(frame, x=x))
+        _, r.exp = unpack(2)
+        return bounce(leval_)
 
     if eq(app, symbol("unquote-splicing")):
-        _, x = unpack(form, 2)
+        _, __ = unpack(2)
         raise LispError("cannot use unquote-splicing here")
 
-    stack.fpush(frame, x=SENTINEL)
+    stack.push(r.cont)
+    stack.push(Queue())
 
-    return qq_list_setup(frame, form)
+    return qq_list_setup(form)
 
 
-def qq(frame):
-    form = frame.x
-    if isinstance(form, list):
-        return bounce(qq_list, frame)
-    return bounce(frame.c, form)
+def qq():
+    if isinstance(r.exp, list):
+        return bounce(qq_list)
+    return r.go(r.exp)
+
+
+def qq_end():
+    r.env = stack.pop()
+    r.cont = stack.pop()
+
+    r.exp = r.val
+    r.env = r.env.up()  ## NB we know we have an enclosing env
+    return bounce(leval_)
 
 
 @spcl("quasiquote")
 def op_quasiquote():
     (form,) = unpack(1)
-    return bounce(qq, Frame(frame, x=form))
+    stack.push(r.cont)
+    stack.push(r.env)
+    r.cont = qq_end
+    r.exp = form
+    return bounce(qq)
 
 
 ## }}}
@@ -1780,7 +1802,7 @@ def op_ffi_time(args):
 
 ## }}}
 
-## {{{ XXX lisp runtime
+## {{{ lisp runtime
 
 
 RUNTIME = r"""
@@ -2456,7 +2478,7 @@ RUNTIME = r"""
 """
 
 
-## XXX parse(RUNTIME, leval)
+parse(RUNTIME, leval)
 
 
 ## }}}
@@ -2464,8 +2486,6 @@ RUNTIME = r"""
 
 if __name__ == "__main__":
     main()
-    assert not stack
-    print("OK")
 
 
 ## EOF
