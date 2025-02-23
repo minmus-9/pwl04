@@ -93,7 +93,7 @@
     (fold-left mul 2 (range 3 (add n 1) 1))
 )
 
-(def (xrange start stop step)
+(define xrange (lambda (start stop step) (do
     (define i (sub start step))
     (def (next)
         (if
@@ -106,7 +106,10 @@
         )
     )
     next
-)
+)))
+
+(define z (xrange 1 10 1))
+(print (z))
 
 (def (!9 n)
     (def (f r)
@@ -263,8 +266,8 @@
     (print '!5  (timeit (lambda (_) (!5 n)) reps))
     (print '!6  (timeit (lambda (_) (!6 n)) reps))
     (print '!7  (timeit (lambda (_) (!7 n)) reps))
-    ;(print '!8  (timeit (lambda (_) (!8 n)) reps))
-    ;(print '!9  (timeit (lambda (_) (!9 n)) reps))
+    (print '!8  (timeit (lambda (_) (!8 n)) reps))
+    (print '!9  (timeit (lambda (_) (!9 n)) reps))
     ;(print '!10 (timeit (lambda (_) (!10 n)) reps))
     (print '!11 (timeit (lambda (_) (!11 n)) reps))
     (print '!12 (timeit (lambda (_) (!12 n)) reps))

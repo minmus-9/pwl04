@@ -901,6 +901,7 @@ def eval_next_():
     if args is EL:
         r.cont = eval_last_
     else:
+        r.cont = eval_next_
         stack.push(args)
     return bounce(leval_)
 
@@ -970,16 +971,16 @@ def leval_():
         return r.go(r.env.get(x))
     if isinstance(x, list):
         op, args = x
+        if isinstance(op, Symbol):
+            op = r.env.get(op)
+            if getattr(op, "special", False):
+                r.argl = args
+                return bounce(op)
     elif isinstance(x, Lambda):
         op = x
         args = EL
     else:
         return r.go(x)
-    if isinstance(op, Symbol):
-        op = r.env.get(op)
-        if getattr(op, "special", False):
-            r.argl = args
-            return bounce(op)
 
     stack.push(r.cont)
     stack.push(r.env)
@@ -1326,7 +1327,6 @@ def qq_finish():
             break
         ret = [x, ret]
     r.pop_ce()
-    #r.env = r.env.up()
     r.val = ret
     return r.go()
 
