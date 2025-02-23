@@ -698,7 +698,6 @@ class Registers:
         "cont",
         "env",
         "exp",
-        "unev",
         "val",
     )
 
@@ -707,7 +706,6 @@ class Registers:
         self.cont = EL
         self.env = EL
         self.exp = EL
-        self.unev = EL
         self.val = EL
 
     def get(self):
@@ -819,28 +817,25 @@ def stringify(expr):
 
 
 def stringify_next_():
-    r.unev = stack.pop()
-    r.argl = stack.pop()
+    rest = stack.pop()
 
-    r.argl.enqueue(r.val)
-    r.exp, r.unev = r.unev
-    stack.push(r.argl)
-    if r.unev is EL:
+    stack.push(r.val)
+    r.exp, rest = rest
+    if rest is EL:
         r.cont = stringify_last_
         return bounce(stringify_)
 
-    stack.push(r.unev)
+    stack.push(rest)
     return bounce(stringify_)
 
 
 def stringify_last_():
-    q = stack.pop()
-    q.enqueue(r.val)
-    h = q.head()
-    parts = []
-    while h is not EL:
-        parts.append(h[0])
-        h = h[1]
+    parts = [r.val]
+    while True:
+        x = stack.pop()
+        if x is SENTINEL:
+            break
+        parts.insert(0, x)
     r.val = "(" + " ".join(parts) + ")"
     r.cont = stack.pop()
     return r.go()
@@ -864,16 +859,14 @@ def stringify_():
     if not isinstance(x, list):
         return r.go("[opaque]")
 
-    r.exp = x[0]
-    r.unev = x[1]
-    r.argl = Queue()
+    r.exp, rest = x
 
     stack.push(r.cont)
-    stack.push(r.argl)
-    if r.unev is EL:
+    stack.push(SENTINEL)
+    if rest is EL:
         r.cont = stringify_last_
     else:
-        stack.push(r.unev)
+        stack.push(rest)
         r.cont = stringify_next_
     return bounce(stringify_)
 
@@ -1325,13 +1318,14 @@ def qq_finish(value):
         if x is SENTINEL:
             break
         ret = [x, ret]
-    r.val = ret
     r.cont = stack.pop()
+    r.val = ret
     return r.go()
 
 
 def qq_list_cont():
     form = stack.pop()
+    print("QLC", form)
 
     if form is EL:
         return qq_finish(r.val)
@@ -1398,7 +1392,7 @@ def qq_end():
 
     r.exp = r.val
     r.env = r.env.up()  ## NB we know we have an enclosing env
-    print(r.cont, r.val, "//", r.env.d)
+    print("QQE", r.cont, r.val, "//", r.env.d)
     return bounce(leval_)
 
 
