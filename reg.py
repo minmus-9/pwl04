@@ -720,6 +720,14 @@ class Registers:
             self.val = value
         return bounce(self.cont)
 
+    def push_ce(self):
+        stack.push(r.cont)
+        stack.push(r.env)
+
+    def pop_ce(self):
+        self.env = stack.pop()
+        self.cont = stack.pop()
+
 
 r = Registers()
 
@@ -1161,8 +1169,8 @@ def op_cond():
 def op_define_cont_():
     sym = stack.pop()
     r.env = stack.pop()
-    r.env.set(sym, r.val)
     r.cont = stack.pop()
+    r.env.set(sym, r.val)
     r.val = EL
     return r.go()
 
@@ -1298,11 +1306,10 @@ def qq_list_setup(form):
     if not (isinstance(form, list) or form is EL):
         raise TypeError(f"expected list, got {form!r}")
     stack.push(form)
+    r.push_ce()
     if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
         r.argl = elt
         _, x = unpack(2)
-        stack.push(r.cont)
-        stack.push(r.env)
         r.cont = qq_spliced
         r.exp = x
         return bounce(leval_)
@@ -1311,60 +1318,65 @@ def qq_list_setup(form):
     return bounce(qq)
 
 
-def qq_finish(value):
-    ret = EL if value is SENTINEL else [value, EL]
+def qq_finish():
+    ret = EL
     while True:
         x = stack.pop()
         if x is SENTINEL:
             break
         ret = [x, ret]
-    r.cont = stack.pop()
+    r.pop_ce()
+    #r.env = r.env.up()
     r.val = ret
     return r.go()
 
 
 def qq_list_cont():
+    r.pop_ce()
     form = stack.pop()
-    print("QLC", form)
-
-    if form is EL:
-        return qq_finish(r.val)
 
     stack.push(r.val)
+
+    if form is EL:
+        return qq_finish()
 
     return qq_list_setup(form)
 
 
 def qq_spliced():
-    r.env = stack.pop()
-    r.cont = stack.pop()
+    r.pop_ce()
     form = stack.pop()
     value = r.val
 
     if value is EL:
         if form is EL:
-            return qq_finish(SENTINEL)
+            return qq_finish()
         return qq_list_setup(form)
 
     while value is not EL:
         elt, value = value
         if value is EL:
-            stack.push(form)
             r.val = elt
+            stack.push(form)
+            r.push_ce()
             return bounce(qq_list_cont)
         stack.push(elt)
 
     raise RuntimeError("logs in the bedpan")
 
 
-def qq_list():
+def qq():
+    if not isinstance(r.exp, list):
+        return r.go(r.exp)
+
     form = r.exp
     app = form[0]
 
     r.argl = form
     if eq(app, symbol("quasiquote")):
-        _, r.exp = unpack(2)
-        return bounce(qq)
+        ### XXX proper nesting?
+        r.argl = form[1]
+        return bounce(op_quasiquote)
 
     if eq(app, symbol("unquote")):
         _, r.exp = unpack(2)
@@ -1374,34 +1386,15 @@ def qq_list():
         _, __ = unpack(2)
         raise LispError("cannot use unquote-splicing here")
 
-    stack.push(r.cont)
+    r.push_ce()
     stack.push(SENTINEL)
 
     return qq_list_setup(form)
 
 
-def qq():
-    if isinstance(r.exp, list):
-        return bounce(qq_list)
-    return r.go(r.exp)
-
-
-def qq_end():
-    r.env = stack.pop()
-    r.cont = stack.pop()
-
-    r.exp = r.val
-    r.env = r.env.up()  ## NB we know we have an enclosing env
-    print("QQE", r.cont, r.val, "//", r.env.d)
-    return bounce(leval_)
-
-
 @spcl("quasiquote")
 def op_quasiquote():
     (form,) = unpack(1)
-    stack.push(r.cont)
-    stack.push(r.env)
-    r.cont = qq_end
     r.exp = form
     return bounce(qq)
 
@@ -2208,6 +2201,7 @@ RUNTIME = r"""
     (define vdecls (transpose vdefs))
     (define vars (car vdecls))
     (define vals (cadr vdecls))
+    (print "LET" `((lambda (,@vars) ,body) ,@vals))
     `((lambda (,@vars) ,body) ,@vals)
 )
 

@@ -153,9 +153,9 @@
 ;;; bisection p.89-90
 (define bisection (lambda (f a b tol) (do
     (define bisection1 (lambda (f a b tol) (do
-        (define close-enough? (lambda (x y) (
-            lt? (abs (sub x y)) tol
-        )))
+        (define close-enough? (lambda (x y)
+            (lt? (abs (sub x y)) tol)
+        ))
         (let
             ((midpoint (mul .5 (add a b))))
             (if
