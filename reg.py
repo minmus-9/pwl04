@@ -2352,6 +2352,7 @@ RUNTIME = r"""
     (if (lt? step 1) (error "step must be positive") ())
     (define i start)
     (define c (call/cc (lambda (cc) cc)))
+    (print f c)
     (if
         (lt? i stop)
         ( do
