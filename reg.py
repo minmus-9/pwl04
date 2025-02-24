@@ -2201,7 +2201,6 @@ RUNTIME = r"""
     (define vdecls (transpose vdefs))
     (define vars (car vdecls))
     (define vals (cadr vdecls))
-    (print "LET" `((lambda (,@vars) ,body) ,@vals))
     `((lambda (,@vars) ,body) ,@vals)
 )
 
