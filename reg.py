@@ -1726,7 +1726,6 @@ def op_while():
     stack.push(x)
     stack.push(r.env)
     r.exp = x
-    r.cont = op_while_cont
     return bounce(leval_)
 
 

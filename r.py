@@ -856,6 +856,107 @@ def leval_last_():
 
 
 ## }}}
+## {{{ ffi
+
+
+def do_ffi():
+    push(r.cont)
+    push(r.exp)  ## proc
+
+    if r.argl is EL:
+        r.argl = []
+        return ffi_args_done_
+    r.cont = ffi_args_done_
+    r.exp = r.argl
+    return lisp_value_to_py_value_
+
+
+def ffi_args_done_():
+    proc = pop()
+    r.cont = pop()
+    r.exp = proc(r.val)
+    return py_value_to_lisp_value_
+
+
+def lisp_value_to_py_value(x):
+    r.exp = x
+    r.cont = land
+    return trampoline(lisp_value_to_py_value_)
+
+
+def lisp_value_to_py_value_():
+    x = r.exp
+    if x is EL:
+        x = None
+    elif x is T:
+        x = True
+    if not isinstance(x, list):
+        r.val = x
+        return r.cont
+    push(r.cont)
+    push([])
+    return lv2pv_setup_(x)
+
+
+def lv2pv_setup_(args):
+    r.exp, args = args
+    push(args)
+    r.cont = lv2pv_next_
+    return lisp_value_to_py_value_
+
+
+def lv2pv_next_():
+    args = pop()
+    argl = pop()
+    argl.append(r.val)
+    if args is EL:
+        r.val = argl
+        return pop()
+    push(argl)
+    return lv2pv_setup_
+
+
+def py_value_to_lisp_value(x):
+    r.cont = land
+    r.exp = x
+    return trampoline(py_value_to_lisp_value_)
+
+
+def py_value_to_lisp_value_():
+    x = r.exp
+    if x is None or x is False:
+        x = EL
+    elif x is True:
+        x = T
+    if not isinstance(x, (list, tuple)):
+        return go(x)
+    if not x:
+        return go(EL)
+
+    push(r.cont)
+    push(Queue())
+    return pv2lv_setup_(list(x))
+
+
+def pv2lv_setup_(args):
+    r.exp = args.pop(0)
+    push(args)
+    r.cont = pv2lv_next_
+    return py_value_to_lisp_value_
+
+
+def pv2lv_next_():
+    args = pop()
+    argl = pop()
+    argl.enqueue(r.val)
+    if not args:
+        r.val = argl.head()
+        return pop()
+    push(argl)
+    return pv2lv_setup_(args)
+
+
+## }}}
 ## {{{ special forms
 
 
@@ -1291,6 +1392,85 @@ def op_type():
         return symbol("opaque")
 
     return unary(f)
+
+
+@glbl("while")
+def op_while():
+    (x,) = unpack(1)
+    if not callable(x):
+        raise TypeError(f"expected callable, got {x!r}")
+
+    push(r.cont)
+    push(x)
+    push(r.env)
+    r.exp = x
+    r.cont = op_while_
+    return leval_
+
+
+def op_while_cont():
+    r.env = pop()
+    x = top()
+
+    if r.val is EL:
+        stack.pop()  ## x
+        return stack.pop()
+    stack.push(r.env)
+    r.exp = x
+    r.cont = op_while_
+    return leval_
+
+
+## }}}
+## {{{ ffi
+
+
+def module_ffi(args, module):
+    if not args:
+        raise TypeError("at least one arg required")
+    sym = symcheck(args.pop(0))
+    func = getattr(module, str(sym), SENTINEL)
+    if func is SENTINEL:
+        raise ValueError(f"function {sym!r} does not exist")
+    return func(*args)
+
+
+@ffi("math")
+def op_ffi_math(args):
+    import math  ## pylint: disable=import-outside-toplevel
+
+    return module_ffi(args, math)
+
+
+@ffi("random")
+def op_ffi_random(args):
+    import random  ## pylint: disable=import-outside-toplevel
+
+    return module_ffi(args, random)
+
+
+@ffi("range")
+def op_ffi_range(args):
+    return list(range(*args))
+
+
+@ffi("shuffle")
+def op_ffi_shuffle(args):
+    import random  ## pylint: disable=import-outside-toplevel
+
+    (l,) = args
+    random.shuffle(l)
+    return l
+
+
+@ffi("time")
+def op_ffi_time(args):
+    import time  ## pylint: disable=import-outside-toplevel
+
+    def f(args):
+        return [tuple(arg) if isinstance(arg, list) else arg for arg in args]
+
+    return module_ffi(f(args), time)
 
 
 ## }}}
