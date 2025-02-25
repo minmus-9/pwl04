@@ -83,10 +83,12 @@ class Registers:
     def push_ce(self):
         push(self.cont)
         push(self.env)
+        # XXX stack.s = [self.env, [self.cont, stack.s]]
 
     def pop_ce(self):
         self.env = pop()
         self.cont = pop()
+        # XXX self.env, (self.cont, stack.s) = stack.s
 
     def go(self, val):
         self.val = val
@@ -242,10 +244,10 @@ class Environment:
         symcheck(sym)
         e = self
         while e is not SENTINEL:
-            x = e.d.get(sym, SENTINEL)
-            if x is not SENTINEL:
-                return x
-            e = e.p
+            try:
+                return e.d[sym]
+            except KeyError:
+                e = e.p
         raise NameError(str(sym))
 
     def set(self, sym, value):
@@ -783,16 +785,17 @@ def leval(exp, env=SENTINEL):
 
 def leval_():
     x = r.exp
-    if isinstance(x, Symbol):
+    t = type(x)
+    if t is Symbol:
         return go(r.env.get(x))
-    if isinstance(x, list):
+    if t is list:
         op, args = x
         if isinstance(op, Symbol):
             op = r.env.get(op)
             if getattr(op, "special", False):
                 r.argl = args
                 return op
-    elif isinstance(x, Lambda):
+    elif t is Lambda:
         op = x
         args = EL
     else:
