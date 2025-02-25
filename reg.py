@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
-"reg.py -- register based lisp from chapter 5 of sicp"
+"""
+reg.py -- register based lisp from chapter 5 of sicp. this is the fastest yet
+"""
 
-## pylint: disable=invalid-name,unbalanced-tuple-unpacking,too-many-lines
+## pylint: disable=invalid-name,too-many-lines
 ## XXX pylint: disable=missing-docstring
 
 
@@ -11,7 +13,43 @@ import os
 import sys
 import traceback
 
+## {{{ exports
 
+__all__ = (
+    "Continuation",
+    "Lambda",
+    "Parser",
+    "Queue",
+    "Scanner",
+    "execute",
+    "ffi",
+    "genv",
+    "glbl",
+    "go",
+    "land",
+    "leval",
+    "leval_",
+    "load",
+    "main",
+    "parse",
+    "pop",
+    "pop_ce",
+    "push",
+    "push_ce",
+    "r",
+    "repl",
+    "spcl",
+    "stack",
+    "stringify",
+    "stringify_",
+    "top",
+    "trampoline",
+    "unpack1",
+    "unpack2",
+    "unpack3",
+)
+
+## }}}
 ## {{{ basics
 
 
@@ -812,7 +850,7 @@ def leval_():
             except KeyError:
                 e = e.p
                 if e is SENTINEL:
-                    raise NameError(str(op)) from None
+                    raise NameError(str(x)) from None
 
         return r.cont
     if t is list:
