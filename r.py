@@ -692,13 +692,13 @@ class Lambda:
     def lambda_body_done(self):
         ## pylint: disable=no-self-use
         bodystr = r.val
-        paramstr = stack.pop()
+        paramstr = pop()
         r.val = "(lambda " + paramstr + " " + bodystr + ")"
-        return stack.pop()
+        return pop()
 
     def lambda_params_done(self):
         r.cont = self.lambda_body_done
-        r.exp = stack.pop()
+        r.exp = pop()
         push(r.val)
         return stringify_
 
@@ -726,25 +726,25 @@ def stringify_setup_(rest):
         r.cont = stringify_last_
     else:
         r.cont = stringify_next_
-        stack.push(rest)
+        push(rest)
     return stringify_
 
 
 def stringify_next_():
-    rest = stack.pop()
-    stack.push(r.val)
+    rest = pop()
+    push(r.val)
     return stringify_setup_(rest)
 
 
 def stringify_last_():
     parts = [r.val]
     while True:
-        x = stack.pop()
+        x = pop()
         if x is SENTINEL:
             break
         parts.insert(0, x)
     r.val = "(" + " ".join(parts) + ")"
-    return stack.pop()
+    return pop()
 
 
 def stringify_():
@@ -765,8 +765,8 @@ def stringify_():
     if not isinstance(x, list):
         return go("[opaque]")
 
-    stack.push(r.cont)
-    stack.push(SENTINEL)
+    push(r.cont)
+    push(SENTINEL)
     return stringify_setup_(x)
 
 
@@ -1423,7 +1423,7 @@ def op_print():
 
 
 def op_print_():
-    args = stack.pop()
+    args = pop()
 
     if args is EL:
         print(r.val)
@@ -1514,9 +1514,9 @@ def op_while_():
     x = top()
 
     if r.val is EL:
-        stack.pop()  ## x
-        return stack.pop()
-    stack.push(r.env)
+        pop()  ## x
+        return pop()
+    push(r.env)
     r.exp = x
     r.cont = op_while_
     return leval_
@@ -1575,7 +1575,6 @@ def op_ffi_time(args):
 
 
 ## }}}
-
 ## {{{ lisp runtime
 
 
@@ -2239,6 +2238,7 @@ parse(RUNTIME, leval)
 
 
 ## }}}
+
 
 if __name__ == "__main__":
     main()
