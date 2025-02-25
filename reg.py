@@ -219,7 +219,9 @@ class Environment:
         variadic = False
         while params is not EL:
             p, params = params
-            if symcheck(p) is v:
+            if not isinstance(p, Symbol):
+                raise TypeError(f"expected symbol, got {p!r}")
+            if p is v:
                 variadic = True
             elif variadic:
                 if params is not EL:
@@ -229,35 +231,40 @@ class Environment:
             elif args is EL:
                 raise SyntaxError("not enough args")
             else:
-                d[p] = args[0]
-                args = args[1]
+                d[p], args = args
         if variadic:
             raise SyntaxError("params ends with '&'")
         if args is not EL:
             raise SyntaxError("too many args")
 
     def get(self, sym):
-        symcheck(sym)
+        if not isinstance(sym, Symbol):
+            raise TypeError(f"expected symbol, got {sym!r}")
         e = self
-        while e is not SENTINEL:
+        while True:
             try:
                 return e.d[sym]
             except KeyError:
                 e = e.p
-        raise NameError(str(sym))
+                if e is SENTINEL:
+                    raise NameError(str(sym)) from None
 
     def set(self, sym, value):
-        self.d[symcheck(sym)] = value
+        if not isinstance(sym, Symbol):
+            raise TypeError(f"expected symbol, got {sym!r}")
+        self.d[sym] = value
 
     def setbang(self, sym, value):
-        symcheck(sym)
+        if not isinstance(sym, Symbol):
+            raise TypeError(f"expected symbol, got {sym!r}")
         e = self
-        while e is not SENTINEL:
+        while True:
             if sym in e.d:
                 e.d[sym] = value
                 return EL
             e = e.p
-        raise NameError(str(sym))
+            if e is SENTINEL:
+                raise NameError(str(sym))
 
     def up(self):
         return self.p
@@ -789,14 +796,39 @@ def leval(exp, env=SENTINEL):
 
 
 def leval_():
+    ## pylint: disable=too-many-branches
+    ## to speed up python code you have to eliminate function
+    ## calls. we aggressively do that in leval_*() for a big
+    ## speed boost. it *is* a little opaque in spots
     x = r.exp
     t = type(x)
     if t is Symbol:
-        return go(r.env.get(x))
+        ## inline env.get
+        e = r.env
+        while True:
+            try:
+                r.val = e.d[x]
+                break
+            except KeyError:
+                e = e.p
+                if e is SENTINEL:
+                    raise NameError(str(op)) from None
+
+        return r.cont
     if t is list:
         op, args = x
         if isinstance(op, Symbol):
-            op = r.env.get(op)
+            ## inline env.get
+            e = r.env
+            while True:
+                try:
+                    op = e.d[op]
+                    break
+                except KeyError:
+                    e = e.p
+                    if e is SENTINEL:
+                        raise NameError(str(op)) from None
+
             if op.special:
                 r.argl = args
                 return op
@@ -804,8 +836,10 @@ def leval_():
         op = x
         args = EL
     else:
-        return go(x)
+        r.val = x
+        return r.cont
 
+    ## push_ce(); push(args)
     stack.s = [args, [r.env, [r.cont, stack.s]]]
 
     ## list or sym lookup
@@ -834,26 +868,31 @@ def leval_proc_done_():
         r.cont, stack.s = s
         return proc
 
-    stack.s = [r.env, [SENTINEL, [proc, s]]]
-
-    return leval_setup_(r.argl)
-
-
-def leval_setup_(args):
-    r.exp, args = args
+    ## inline old leval_setup() to avoid function call
+    s = [r.env, [SENTINEL, [proc, s]]]
+    r.exp, args = r.argl
     if args is EL:
         r.cont = leval_last_
     else:
-        stack.s = [args, stack.s]
+        s = [args, s]
         r.cont = leval_next_
+    stack.s = s
     return leval_
 
 
 def leval_next_():
     args, s = stack.s
     r.env, s = s
-    stack.s = [r.env, [r.val, s]]
-    return leval_setup_(args)
+    s = [r.env, [r.val, s]]
+    ## inline old leval_setup() to avoid function call
+    r.exp, args = args
+    if args is EL:
+        r.cont = leval_last_
+    else:
+        s = [args, s]
+        r.cont = leval_next_
+    stack.s = s
+    return leval_
 
 
 def leval_last_():
@@ -1208,13 +1247,28 @@ def qq_finish_():
 
 
 def unary(f):
-    x = unpack1()
-    return go(f(x))
+    args = r.argl
+    if args is EL:
+        raise SyntaxError("not enough args, need 2")
+    x, args = args
+    if args is not EL:
+        raise SyntaxError("too many args, need 1")
+    r.val = f(x)
+    return r.cont
 
 
 def binary(f):
-    x, y = unpack2()
-    return go(f(x, y))
+    args = r.argl
+    if args is EL:
+        raise SyntaxError("not enough args, need 2")
+    x, args = args
+    if args is EL:
+        raise SyntaxError("not enough args, need 2")
+    y, args = args
+    if args is not EL:
+        raise SyntaxError("too many args, need 2")
+    r.val = f(x, y)
+    return r.cont
 
 
 @glbl("apply")
