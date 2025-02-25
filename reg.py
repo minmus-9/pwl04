@@ -857,18 +857,22 @@ def leval_proc_done_():
     proc = r.val
     if not callable(proc):
         raise TypeError(f"expected callable, got {proc!r}")
+    ## pop r.argl and r.env
     r.argl, s = stack.s
     r.env, s = s
 
     if r.argl is EL:
+        ## pop r.cont
         r.cont, stack.s = s
         return proc
 
     if proc.special:
+        ## pop r.cont
         r.cont, stack.s = s
         return proc
 
     ## inline old leval_setup() to avoid function call
+    ## push proc, SENTINEL, env
     s = [r.env, [SENTINEL, [proc, s]]]
     r.exp, args = r.argl
     if args is EL:
@@ -881,14 +885,17 @@ def leval_proc_done_():
 
 
 def leval_next_():
+    ## pop args and r.env
     args, s = stack.s
     r.env, s = s
+    ## push val and r.env
     s = [r.env, [r.val, s]]
     ## inline old leval_setup() to avoid function call
     r.exp, args = args
     if args is EL:
         r.cont = leval_last_
     else:
+        ## push args
         s = [args, s]
         r.cont = leval_next_
     stack.s = s
@@ -896,15 +903,19 @@ def leval_next_():
 
 
 def leval_last_():
+    ## pop r.env
     r.env, s = stack.s
     args = [r.val, EL]
     while True:
+        ## pop x
         x, s = s
         if x is SENTINEL:
             break
         args = [x, args]
     r.argl = args
+    ## pop proc
     proc, s = s
+    ## pop cont
     r.cont, stack.s = s
     if proc.ffi:
         r.exp = proc
