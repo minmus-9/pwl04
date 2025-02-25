@@ -625,6 +625,27 @@ def unpack(n):
     return ret
 
 
+def unpack1():
+    if r.argl is EL:
+        raise SyntaxError("not enough args, need 1")
+    ret, x = r.argl
+    if x is not EL:
+        raise SyntaxError("too many args, need 1")
+    return ret
+
+
+def unpack2():
+    if r.argl is EL:
+        raise SyntaxError("not enough args, need 2")
+    x, args = r.argl
+    if args is EL:
+        raise SyntaxError("not enough args, need 2")
+    y, args = args
+    if args is not EL:
+        raise SyntaxError("too many args, need 2")
+    return x, y
+
+
 ## }}}
 ## {{{ continuation
 
@@ -640,7 +661,7 @@ class Continuation:
         self.s = stack_get()
 
     def __call__(self):
-        (x,) = unpack(1)
+        x = unpack1()
         regs_set(self.r)
         stack_set(self.s)
         r.val = x
@@ -965,7 +986,7 @@ def op_cond():
 def op_cond_setup_(args):
     pc, args = args
     r.argl = pc
-    r.exp, c = unpack(2)
+    r.exp, c = unpack2()
     push(c)
     push(r.env)
     if args is EL:
@@ -997,7 +1018,7 @@ def op_cond_last_():
 
 @spcl("define")
 def op_define():
-    sym, value = unpack(2)
+    sym, value = unpack2()
     push(symcheck(sym))
     push_ce()
     r.cont = op_define_
@@ -1029,19 +1050,19 @@ def op_if_():
 
 @spcl("lambda")
 def op_lambda():
-    params, body = unpack(2)
+    params, body = unpack2()
     return go(Lambda(params, body, r.env))
 
 
 @spcl("quote")
 def op_quote():
-    (r.val,) = unpack(1)
+    r.val = unpack1()
     return r.cont
 
 
 @spcl("set!")
 def op_setbang():
-    sym, value = unpack(2)
+    sym, value = unpack2()
     push(symcheck(sym))
     push_ce()
     r.cont = op_setbang_
@@ -1058,7 +1079,7 @@ def op_setbang_():
 
 @spcl("special")
 def op_special():
-    sym, value = unpack(2)
+    sym, value = unpack2()
     push(symcheck(sym))
     push_ce()
     r.cont = op_special_
@@ -1078,7 +1099,7 @@ def op_special_():
 
 @spcl("trap")
 def op_trap():
-    (x,) = unpack(1)
+    x = unpack1()
     ok = T
     push_ce()
     try:
@@ -1097,7 +1118,7 @@ def op_trap():
 
 @spcl("quasiquote")
 def op_quasiquote():
-    (r.exp,) = unpack(1)
+    r.exp = unpack1()
     return qq_
 
 
@@ -1112,10 +1133,10 @@ def qq_():
         return op_quasiquote
     if eq(app, symbol("unquote")):
         r.argl = form
-        _, r.exp = unpack(2)
+        _, r.exp = unpack2()
         return leval_
     if eq(app, symbol("unquote-splicing")):
-        _, __ = unpack(2)
+        _, __ = unpack2()
         raise LispError("cannot use unquote-splicing here")
     push_ce()
     push(SENTINEL)
@@ -1130,7 +1151,7 @@ def qq_setup_(form):
     push_ce()
     if isinstance(elt, list) and eq(elt[0], symbol("unquote-splicing")):
         r.argl = elt
-        _, r.exp = unpack(2)
+        _, r.exp = unpack2()
         r.cont = qq_spliced_
         return leval_
     r.cont = qq_next_
@@ -1183,18 +1204,18 @@ def qq_finish_():
 
 
 def unary(f):
-    (x,) = unpack(1)
+    x = unpack1()
     return go(f(x))
 
 
 def binary(f):
-    x, y = unpack(2)
+    x, y = unpack2()
     return go(f(x, y))
 
 
 @glbl("apply")
 def op_apply():
-    proc, args = unpack(2)
+    proc, args = unpack2()
     if not callable(proc):
         raise TypeError(f"expected callable, got {proc!r}")
     r.argl = args
@@ -1212,7 +1233,7 @@ def op_atom():
 @glbl("call/cc")
 @glbl("call-with-current-contination")
 def op_callcc():
-    (x,) = unpack(1)
+    x = unpack1()
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
     r.argl = [Continuation(r.cont), EL]
@@ -1245,7 +1266,7 @@ def op_cdr():
 
 @glbl("cons")
 def op_cons():
-    r.val = unpack(2)
+    r.val = list(unpack2())
     return r.cont
 
 
@@ -1288,7 +1309,7 @@ def op_equal():
 
 @glbl("error")
 def op_error():
-    (x,) = unpack(1)
+    x = unpack1()
     raise LispError(x)
 
 
@@ -1324,7 +1345,7 @@ def op_eval():
 
 @glbl("exit")
 def op_exit():
-    (x,) = unpack(1)
+    x = unpack1()
     if isinstance(x, int):
         raise SystemExit(x)
     r.exp = x
@@ -1338,7 +1359,7 @@ def op_exit_():
 
 @glbl("last")
 def op_last():
-    (x,) = unpack(1)
+    x = unpack1()
     ret = EL
     while x is not EL:
         ret, x = x
@@ -1378,7 +1399,7 @@ def op_nand():
 
 @glbl("null?")
 def op_null():
-    (x,) = unpack(1)
+    x = unpack1()
     r.val = T if x is EL else EL
     return r.cont
 
@@ -1476,7 +1497,7 @@ def op_type():
 
 @glbl("while")
 def op_while():
-    (x,) = unpack(1)
+    x = unpack1()
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
 
