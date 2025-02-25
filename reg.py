@@ -29,6 +29,9 @@ __all__ = (
     "Stack",
     "Symbol",
     "T",
+    "car",
+    "cdr",
+    "cons",
     "eq",
     "error",
     "execute",
@@ -40,6 +43,7 @@ __all__ = (
     "land",
     "leval",
     "leval_",
+    "listcheck",
     "load",
     "main",
     "parse",
@@ -49,6 +53,8 @@ __all__ = (
     "push_ce",
     "r",
     "repl",
+    "set_car",
+    "set_cdr",
     "spcl",
     "stack",
     "stringify",
@@ -117,6 +123,36 @@ def symcheck(x):
     if isinstance(x, Symbol):
         return x
     raise TypeError(f"expected symbol, got {x!r}")
+
+
+## }}}
+## {{{ pairs, not used internally for performance
+
+
+def listcheck(x):
+    if isinstance(x, list):
+        return x
+    raise TypeError(f"expected list, got {x!r}")
+
+
+def car(x):
+    return listcheck(x)[0]
+
+
+def cdr(x):
+    return listcheck(x)[1]
+
+
+def cons(x, y):
+    return [x, y]
+
+
+def set_car(x, y):
+    listcheck(x)[0] = y
+
+
+def set_cdr(x, y):
+    listcheck(x)[1] = y
 
 
 ## }}}
@@ -1358,12 +1394,6 @@ def op_callcc():
         raise TypeError(f"expected callable, got {x!r}")
     r.argl = [Continuation(r.cont), EL]
     return x
-
-
-def listcheck(x):
-    if isinstance(x, list):
-        return x
-    raise TypeError(f"expected list, got {x!r}")
 
 
 @glbl("car")
