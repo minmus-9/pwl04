@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"r.py"
+"reg.py -- register based lisp from chapter 5 of sicp"
 
 ## pylint: disable=invalid-name,unbalanced-tuple-unpacking,too-many-lines
 ## XXX pylint: disable=missing-docstring
@@ -69,7 +69,7 @@ def symcheck(x):
 
 
 ## }}}
-## {{{ regs
+## {{{ registers, stack ops inlined for speed
 
 
 class Registers:
@@ -81,25 +81,21 @@ class Registers:
         self.argl = self.cont = self.env = self.exp = self.val = EL
 
     def push_ce(self):
-        push(self.cont)
-        push(self.env)
-        # XXX stack.s = [self.env, [self.cont, stack.s]]
+        stack.s = [self.env, [self.cont, stack.s]]
 
     def pop_ce(self):
-        self.env = pop()
-        self.cont = pop()
-        # XXX self.env, (self.cont, stack.s) = stack.s
+        self.env, s = stack.s
+        self.cont, stack.s = s
 
     def go(self, val):
         self.val = val
         return self.cont
 
     def get(self):
-        return dict((k, getattr(self, k)) for k in self.__slots__)
+        return self.argl, self.cont, self.env, self.exp, self.val
 
     def set(self, x):
-        for k, v in x.items():
-            setattr(self, k, v)
+        self.argl, self.cont, self.env, self.exp, self.val = x
 
 
 r = Registers()
@@ -278,6 +274,7 @@ genv.set(symbol("#t"), T)
 def glbl(name):
     def wrap(func):
         genv.set(symbol(name), func)
+        func.special = func.ffi = False
         return func
 
     return wrap
@@ -287,6 +284,7 @@ def spcl(name):
     def wrap(func):
         genv.set(symbol(name), func)
         func.special = True
+        func.ffi = False
         return func
 
     return wrap
@@ -296,6 +294,7 @@ def ffi(name):
     def wrap(func):
         genv.set(symbol(name), func)
         func.ffi = True
+        func.special = False
         return func
 
     return wrap
@@ -611,20 +610,7 @@ def main(force_repl=False):
 
 
 ## }}}
-## {{{ unpack argl -> []
-
-
-def unpack(n):
-    args = r.argl
-    ret = []
-    for _ in range(n):
-        if args is EL:
-            raise TypeError(f"not enough args, need {n}")
-        ret.append(args[0])
-        args = args[1]
-    if args is not EL:
-        raise TypeError(f"too many args, need {n}")
-    return ret
+## {{{ unpack argl -> (...)
 
 
 def unpack1():
@@ -648,6 +634,21 @@ def unpack2():
     return x, y
 
 
+def unpack3():
+    if r.argl is EL:
+        raise SyntaxError("not enough args, need 3")
+    x, args = r.argl
+    if args is EL:
+        raise SyntaxError("not enough args, need 3")
+    y, args = args
+    if args is EL:
+        raise SyntaxError("not enough args, need 3")
+    z, args = args
+    if args is not EL:
+        raise SyntaxError("too many args, need 3")
+    return x, y, z
+
+
 ## }}}
 ## {{{ continuation
 
@@ -656,6 +657,8 @@ class Continuation:
     ## pylint: disable=too-few-public-methods
 
     __slots__ = ("c", "r", "s")
+
+    ffi = special = False
 
     def __init__(self, continuation):
         self.c = continuation
@@ -676,6 +679,8 @@ class Continuation:
 
 class Lambda:
     __slots__ = ("p", "b", "e", "special")
+
+    ffi = False
 
     def __init__(self, params, body, env):
         self.p = params
@@ -773,7 +778,7 @@ def stringify_():
 
 
 ## }}}
-## {{{ leval exp -> val
+## {{{ leval exp -> val, all stack ops inlined for speed
 
 
 def leval(exp, env=SENTINEL):
@@ -792,7 +797,7 @@ def leval_():
         op, args = x
         if isinstance(op, Symbol):
             op = r.env.get(op)
-            if getattr(op, "special", False):
+            if op.special:
                 r.argl = args
                 return op
     elif t is Lambda:
@@ -801,8 +806,7 @@ def leval_():
     else:
         return go(x)
 
-    push_ce()
-    push(args)
+    stack.s = [args, [r.env, [r.cont, stack.s]]]
 
     ## list or sym lookup
     if callable(op):
@@ -819,20 +823,18 @@ def leval_proc_done_():
     proc = r.val
     if not callable(proc):
         raise TypeError(f"expected callable, got {proc!r}")
-    r.argl = pop()
-    r.env = pop()
-
-    if getattr(proc, "special", False):
-        r.cont = pop()
-        return proc
+    r.argl, s = stack.s
+    r.env, s = s
 
     if r.argl is EL:
-        r.cont = pop()
+        r.cont, stack.s = s
         return proc
 
-    push(proc)
-    push(SENTINEL)
-    push(r.env)
+    if proc.special:
+        r.cont, stack.s = s
+        return proc
+
+    stack.s = [r.env, [SENTINEL, [proc, s]]]
 
     return leval_setup_(r.argl)
 
@@ -842,31 +844,30 @@ def leval_setup_(args):
     if args is EL:
         r.cont = leval_last_
     else:
-        push(args)
+        stack.s = [args, stack.s]
         r.cont = leval_next_
     return leval_
 
 
 def leval_next_():
-    args = pop()
-    r.env = pop()
-    push(r.val)
-    push(r.env)
+    args, s = stack.s
+    r.env, s = s
+    stack.s = [r.env, [r.val, s]]
     return leval_setup_(args)
 
 
 def leval_last_():
-    r.env = pop()
+    r.env, s = stack.s
     args = [r.val, EL]
     while True:
-        x = pop()
+        x, s = s
         if x is SENTINEL:
             break
         args = [x, args]
     r.argl = args
-    proc = pop()
-    r.cont = pop()
-    if getattr(proc, "ffi", False):
+    proc, s = s
+    r.cont, stack.s = s
+    if proc.ffi:
         r.exp = proc
         return do_ffi
     return proc
@@ -1037,7 +1038,7 @@ def op_define_():
 
 @spcl("if")
 def op_if():
-    r.exp, c, a = unpack(3)
+    r.exp, c, a = unpack3()
     push_ce()
     push([c, a])
     r.cont = op_if_

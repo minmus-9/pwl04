@@ -108,9 +108,6 @@
     next
 )))
 
-(define z (xrange 1 10 1))
-(print (z))
-
 (def (!9 n)
     (def (f r)
         (if
@@ -249,11 +246,6 @@
         (#t (mul n (!18 (sub n 1))))
     )
 )
-
-(!1 5)
-(!2 5)
-(!3 5)
-(!4 5)
 
 (def (!bench)
     (define reps 5)
