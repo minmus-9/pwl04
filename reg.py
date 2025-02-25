@@ -767,6 +767,7 @@ class Continuation:
         (x,) = unpack(1)
         stack.set(self.s)
         r.set(self.r)
+        r.cont = self.c
         r.val = x
         return r.go()  ## that's it.
 
