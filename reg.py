@@ -1745,7 +1745,7 @@ def op_ffi_time(args):
 RUNTIME = r"""
 ;; {{{ quasiquote
 
-(special quasiquote (lambda (x) (qq- x)))
+(special quasiquote (lambda (x) (qq- x (lambda (x) (eval x 1)))))
 
 (define qq-queue (lambda () (list () ())))
 
@@ -1774,34 +1774,34 @@ RUNTIME = r"""
     (car q)
 )))
 
-(define qq- (lambda (form) (do
+(define qq- (lambda (form evaluator) (do
     (if
         (pair? form)
-        (qq-pair form)
+        (qq-pair form evaluator)
         form
     )
 )))
 
-(define qq-pair (lambda (form) (do
+(define qq-pair (lambda (form evaluator) (do
     (define q (qq-queue))
     (if
         (null? (cdr (cdr form)))
-        (qq-pair-2 form q)
-        (qq-list form q)
+        (qq-pair-2 form q evaluator)
+        (qq-list form q evaluator)
     )
 )))
 
-(define qq-pair-2 (lambda (form q) (do
+(define qq-pair-2 (lambda (form q evaluator) (do
     (define app (car form))
     (cond
-        ((eq? app 'quasiquote) (qq-enq q (quasiquote (cadr form))))  ; XXX correct?
-        ((eq? app 'unquote) (eval (cadr form)))
+        ((eq? app 'quasiquote) (qq-enq q (qq- (cadr form) evaluator)))  ; XXX correct?
+        ((eq? app 'unquote) (evaluator (cadr form)))
         ((eq? app 'unquote-splicing) (error "cannot do unquote-splicing here"))
-        (#t (qq-list form q))
+        (#t (qq-list form q evaluator))
     )
 )))
 
-(define qq-list (lambda (form q) (do
+(define qq-list (lambda (form q evaluator) (do
     (if
         (null? form)
         ()
@@ -1813,14 +1813,14 @@ RUNTIME = r"""
                     (null? (cdr (cdr elt)))
                     (if
                         (eq? (car elt) 'unquote-splicing)
-                        (qq-lst q (eval (cadr elt)))
-                        (qq-enq q (qq- elt))
+                        (qq-lst q (evaluator (cadr elt)))
+                        (qq-enq q (qq- elt evaluator))
                     )
-                    (qq-enq q (qq- elt))
+                    (qq-enq q (qq- elt evaluator))
                 )
-                (qq-enq q (qq- elt))
+                (qq-enq q (qq- elt evaluator))
             )
-            (qq-list (cdr form) q)
+            (qq-list (cdr form) q evaluator)
         )
     )
     (qq-hed q)
