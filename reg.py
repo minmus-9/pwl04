@@ -909,29 +909,27 @@ def leval_():
     if t is Symbol:
         ## inline env.get
         e = r.env
-        while True:
+        while e is not SENTINEL:
             try:
                 r.val = e.d[x]
-                break
+                return r.cont
             except KeyError:
                 e = e.p
-                if e is SENTINEL:
-                    raise NameError(str(x)) from None
+        raise NameError(str(x)) from None
 
-        return r.cont
     if t is list:
         op, args = x
         if isinstance(op, Symbol):
             ## inline env.get
             e = r.env
-            while True:
+            while e is not SENTINEL:
                 try:
                     op = e.d[op]
                     break
                 except KeyError:
                     e = e.p
-                    if e is SENTINEL:
-                        raise NameError(str(op)) from None
+            else:
+                raise NameError(str(op)) from None
 
             if op.special:
                 r.argl = args
@@ -1232,7 +1230,7 @@ def op_setbang_():
     pop_ce()
     sym = pop()
     r.env.setbang(sym, r.val)
-    return r.cont
+    return go(EL)
 
 
 @spcl("special")
@@ -1252,7 +1250,7 @@ def op_special_():
         raise TypeError(f"expected lambda, got {r.val!r}")
     r.val.special = True
     r.env.set(sym, r.val)
-    return r.cont
+    return go(EL)
 
 
 @spcl("trap")
@@ -1482,7 +1480,6 @@ def op_error():
 
 @glbl("eval")
 def op_eval():
-
     args = r.argl
     if args is EL:
         raise TypeError("need at least one arg")
@@ -1502,9 +1499,9 @@ def op_eval():
         x = l[-1] if l else EL
     e = r.env
     for _ in range(n_up):
+        e = e.up()
         if e is SENTINEL:
             raise ValueError(f"cannot go up {n_up} levels")
-        e = e.up()
     r.exp = x
     r.env = e
     return leval_
@@ -1746,6 +1743,89 @@ def op_ffi_time(args):
 
 
 RUNTIME = r"""
+;; {{{ quasiquote
+
+(special quasiquote (lambda (x) (qq- x)))
+
+(define qq-queue (lambda () (list () ())))
+
+(define qq-hed (lambda (q) (car q)))
+
+(define qq-enq (lambda (q x) (do
+    (define n (cons x ()))
+    (if
+        (null? (car q))
+        (set-car! q n)
+        (set-cdr! (cdr q) n)
+    )
+    (set-cdr! q n)
+    (car q)
+)))
+
+(define qq-lst (lambda (q l) (do
+    (if
+        (null? l)
+        ()
+        (do
+            (qq-enq q (car l))
+            (qq-lst q (cdr l))
+        )
+    )
+    (car q)
+)))
+
+(define qq- (lambda (form) (do
+    (if
+        (pair? form)
+        (qq-pair form)
+        form
+    )
+)))
+
+(define qq-pair (lambda (form) (do
+    (define q (qq-queue))
+    (if
+        (null? (cdr (cdr form)))
+        (qq-pair-2 form q)
+        (qq-list form q)
+    )
+)))
+
+(define qq-pair-2 (lambda (form q) (do
+    (define app (car form))
+    (cond
+        ((eq? app 'quasiquote) (qq-enq q (quasiquote (cadr form))))  ; XXX correct?
+        ((eq? app 'unquote) (eval (cadr form)))
+        ((eq? app 'unquote-splicing) (error "cannot do unquote-splicing here"))
+        (#t (qq-list form q))
+    )
+)))
+
+(define qq-list (lambda (form q) (do
+    (if
+        (null? form)
+        ()
+        (do
+            (define elt (car form))
+            (if
+                (pair? elt)
+                (if
+                    (null? (cdr (cdr elt)))
+                    (if
+                        (eq? (car elt) 'unquote-splicing)
+                        (qq-lst q (eval (cadr elt)))
+                        (qq-enq q (qq- elt))
+                    )
+                    (qq-enq q (qq- elt))
+                )
+                (qq-enq q (qq- elt))
+            )
+            (qq-list (cdr form) q)
+        )
+    )
+    (qq-hed q)
+)))
+;; }}}
 ;; {{{ basics
 
 ;; to accompany quasiquote
