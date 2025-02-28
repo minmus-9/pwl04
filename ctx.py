@@ -1043,7 +1043,9 @@ class Continuation:
         self.s = ctx.save()
 
     def __call__(self, ctx):
+        (x,) = ctx.unpack(1)
         ctx.restore(self.s)
+        ctx.val = x
         return self.c
 
 
@@ -1074,7 +1076,6 @@ class Lambda:
         ## pylint: disable=no-self-use
         bodystr = ctx.val
         paramstr = ctx.pop()
-        print("BP", bodystr, paramstr)
         ctx.val = "(lambda " + paramstr + " " + bodystr + ")"
         return ctx.pop()
 
@@ -1990,7 +1991,6 @@ def op_callcc(ctx):
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
     ctx.argl = [ctx.continuation(ctx.cont), EL]
-    print("CC", ctx.stringify(x), ctx.argl)
     return x
 
 
