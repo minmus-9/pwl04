@@ -19,7 +19,7 @@
 
 "ctx.py"
 
-## pylint: disable=invalid-name
+## pylint: disable=invalid-name,too-many-lines,unbalanced-tuple-unpacking
 ## XXX pylint: disable=missing-docstring
 
 import locale
@@ -351,6 +351,12 @@ class Context:
         self.env = self.g if env is SENTINEL else env
         self.exp = x
         return k_leval
+
+    def lisp_value_to_py_value(self, x):
+        self.exp = x
+        self.cont = self.land
+        return self.trampoline(k_lisp_value_to_py_value)
+
 
     def stringify(self, x):
         self.cont = self.land
@@ -940,34 +946,98 @@ def k_leval_last(ctx):
 
 
 ## }}}
-## {{{ special forms
+## {{{ ffi support
 
 
-@spcl("define")
-def op_define(ctx):
-    sym, value = ctx.unpack(2)
-    if not isinstance(sym, Symbol):
-        raise SyntaxError(f"expected symbol, got {sym!r}")
-    ctx.push_ce()
-    ctx.push(sym)
-    ctx.cont = k_op_define
-    ctx.exp = value
-    return k_leval
+def do_ffi(ctx):
+    push(r.cont)
+    push(r.exp)  ## proc
+
+    if ctx.argl is EL:
+        ctx.argl = []
+        return ffi_args_done_
+    ctx.cont = ffi_args_done_
+    ctx.exp = ctx.argl
+    return lisp_value_to_py_value_
 
 
-def k_op_define(ctx):
-    sym = ctx.pop()
-    ctx.pop_ce()
-    ctx.env.set(sym, ctx.val)
-    ctx.val = EL
-    ## returning None causes trampoline to use ctx.cont
+def k_ffi_args_done(ctx):
+    proc = pop()
+    ctx.cont = pop()
+    ctx.exp = proc(r.val)
+    return py_value_to_lisp_value_
 
 
-@spcl("lambda")
-def op_lambda(ctx):
-    params, body = ctx.unpack(2)
-    ctx.val = Lambda(params, body, ctx.env)
-    ## returning None causes trampoline to use ctx.cont
+def lisp_value_to_py_value_():
+    x = ctx.exp
+    if x is EL:
+        x = None
+    elif x is T:
+        x = True
+    if not isinstance(x, list):
+        ctx.val = x
+        return ctx.cont
+    push(r.cont)
+    push([])
+    return lv2pv_setup_(x)
+
+
+def lv2pv_setup_(args):
+    ctx.exp, args = args
+    push(args)
+    ctx.cont = lv2pv_next_
+    return lisp_value_to_py_value_
+
+
+def lv2pv_next_():
+    args = pop()
+    argl = pop()
+    argl.append(r.val)
+    if args is EL:
+        ctx.val = argl
+        return pop()
+    push(argl)
+    return lv2pv_setup_(args)
+
+
+def py_value_to_lisp_value(x):
+    ctx.cont = land
+    ctx.exp = x
+    return trampoline(py_value_to_lisp_value_)
+
+
+def py_value_to_lisp_value_():
+    x = ctx.exp
+    if x is None or x is False:
+        x = EL
+    elif x is True:
+        x = T
+    if not isinstance(x, (list, tuple)):
+        return go(x)
+    if not x:
+        return go(EL)
+
+    push(r.cont)
+    push(Queue())
+    return pv2lv_setup_(list(x))
+
+
+def pv2lv_setup_(args):
+    ctx.exp = args.pop(0)
+    push(args)
+    ctx.cont = pv2lv_next_
+    return py_value_to_lisp_value_
+
+
+def pv2lv_next_():
+    args = pop()
+    argl = pop()
+    argl.enqueue(r.val)
+    if not args:
+        ctx.val = argl.head()
+        return pop()
+    push(argl)
+    return pv2lv_setup_(args)
 
 
 ## }}}
