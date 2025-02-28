@@ -931,7 +931,7 @@ def leval_():
             else:
                 raise NameError(str(op)) from None
 
-            if op.special:
+            if getattr(op, "special", False):
                 r.argl = args
                 return op
     elif t is Lambda:
@@ -1747,7 +1747,7 @@ def op_ffi_time(args):
 RUNTIME = r"""
 ;; {{{ quasiquote
 
-(special quasiquote (lambda (x) (qq- x (lambda (x) (eval x 1)))))
+(special xquasiquote (lambda (x) (qq- x (lambda (x) (eval x 1)))))
 
 (define qq-queue (lambda () (list () ())))
 

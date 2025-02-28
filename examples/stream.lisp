@@ -1,5 +1,7 @@
 ; from sicp
 
+;; XXX this doesn't work with the lisp implementation of quasiquote
+
 (def (memo-proc proc)
     (let (
         (already-run? ())
