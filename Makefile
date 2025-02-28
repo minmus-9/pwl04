@@ -40,7 +40,7 @@ run:
 	$(LISP) -
 
 bench:
-	time $(TFLAG) $(LISP) examples/bench.lisp
+	time $(TFLAG) $(shell which $(PYTHON)) $(F) examples/bench.lisp
 
 factorial:
 	$(LISP) examples/factorial.lisp
