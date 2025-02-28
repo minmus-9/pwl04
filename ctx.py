@@ -344,7 +344,7 @@ class Context:
         for k, v in GLOBALS.items():
             self.g.set(self.symbol(k), v)
 
-    ## {{{ top level entries
+    ## {{{ top level entry points
 
     def leval(self, x, env=SENTINEL):
         self.cont = self.land
@@ -357,6 +357,10 @@ class Context:
         self.cont = self.land
         return self.trampoline(k_lisp_value_to_py_value)
 
+    def py_value_to_lisp_value(self, x):
+        self.cont = self.land
+        self.exp = x
+        return self.trampoline(k_py_value_to_lisp_value)
 
     def stringify(self, x):
         self.cont = self.land
@@ -950,25 +954,25 @@ def k_leval_last(ctx):
 
 
 def do_ffi(ctx):
-    push(r.cont)
-    push(r.exp)  ## proc
+    ctx.push(ctx.cont)
+    ctx.push(ctx.exp)  ## proc
 
     if ctx.argl is EL:
         ctx.argl = []
-        return ffi_args_done_
-    ctx.cont = ffi_args_done_
+        return k_ffi_args_done
+    ctx.cont = k_ffi_args_done
     ctx.exp = ctx.argl
-    return lisp_value_to_py_value_
+    return k_lisp_value_to_py_value
 
 
 def k_ffi_args_done(ctx):
-    proc = pop()
-    ctx.cont = pop()
-    ctx.exp = proc(r.val)
-    return py_value_to_lisp_value_
+    proc = ctx.pop()
+    ctx.cont = ctx.pop()
+    ctx.exp = proc(ctx.val)
+    return k_py_value_to_lisp_value
 
 
-def lisp_value_to_py_value_():
+def k_lisp_value_to_py_value(ctx):
     x = ctx.exp
     if x is EL:
         x = None
@@ -977,67 +981,203 @@ def lisp_value_to_py_value_():
     if not isinstance(x, list):
         ctx.val = x
         return ctx.cont
-    push(r.cont)
-    push([])
-    return lv2pv_setup_(x)
+    ctx.push(ctx.cont)
+    ctx.push([])
+    return k_lv2pv_setup(ctx, x)
 
 
-def lv2pv_setup_(args):
+def k_lv2pv_setup(ctx, args):
     ctx.exp, args = args
-    push(args)
-    ctx.cont = lv2pv_next_
-    return lisp_value_to_py_value_
+    ctx.push(args)
+    ctx.cont = k_lv2pv_next
+    return k_lisp_value_to_py_value
 
 
-def lv2pv_next_():
-    args = pop()
-    argl = pop()
-    argl.append(r.val)
+def k_lv2pv_next(ctx):
+    args = ctx.pop()
+    argl = ctx.pop()
+    argl.append(ctx.val)
     if args is EL:
         ctx.val = argl
-        return pop()
-    push(argl)
-    return lv2pv_setup_(args)
+        return ctx.pop()
+    ctx.push(argl)
+    return k_lv2pv_setup(ctx, args)
 
 
-def py_value_to_lisp_value(x):
-    ctx.cont = land
-    ctx.exp = x
-    return trampoline(py_value_to_lisp_value_)
-
-
-def py_value_to_lisp_value_():
+def k_py_value_to_lisp_value(ctx):
     x = ctx.exp
     if x is None or x is False:
         x = EL
     elif x is True:
         x = T
     if not isinstance(x, (list, tuple)):
-        return go(x)
+        return ctx.go(x)
     if not x:
-        return go(EL)
+        return ctx.go(EL)
 
-    push(r.cont)
-    push(Queue())
-    return pv2lv_setup_(list(x))
+    ctx.push(ctx.cont)
+    ctx.push(Queue())
+    return k_pv2lv_setup(ctx, list(x))
 
 
-def pv2lv_setup_(args):
+def k_pv2lv_setup(ctx, args):
     ctx.exp = args.pop(0)
-    push(args)
-    ctx.cont = pv2lv_next_
-    return py_value_to_lisp_value_
+    ctx.push(args)
+    ctx.cont = k_pv2lv_next
+    return k_py_value_to_lisp_value
 
 
-def pv2lv_next_():
-    args = pop()
-    argl = pop()
-    argl.enqueue(r.val)
+def k_pv2lv_next(ctx):
+    args = ctx.pop()
+    argl = ctx.pop()
+    argl.enqueue(ctx.val)
     if not args:
         ctx.val = argl.head()
-        return pop()
-    push(argl)
-    return pv2lv_setup_(args)
+        return ctx.pop()
+    ctx.push(argl)
+    return k_pv2lv_setup(ctx, args)
+
+
+## }}}
+## {{{ special forms
+
+
+@spcl("cond")
+def op_cond(ctx):
+    args = ctx.argl
+    if args is EL:
+        return ctx.go(EL)
+    ctx.push(ctx.cont)
+    return k_op_cond_setup(ctx, args)
+
+
+def k_op_cond_setup(ctx, args):
+    pc, args = args
+    ctx.argl = pc
+    ctx.exp, c = ctx.unpack(2)
+    ctx.push(c)
+    ctx.push(ctx.env)
+    if args is EL:
+        ctx.cont = k_op_cond_last
+    else:
+        ctx.push(args)
+        ctx.cont = k_op_cond_next
+    return k_leval
+
+
+def k_op_cond_next(ctx):
+    args = ctx.pop()
+    ctx.env = ctx.pop()
+    ctx.exp = ctx.pop()
+    if ctx.val is not EL:
+        ctx.cont = ctx.pop()
+        return k_leval
+    return k_op_cond_setup(ctx, args)
+
+
+def k_op_cond_last(ctx):
+    ctx.env = ctx.pop()
+    ctx.exp = ctx.pop()
+    ctx.cont = ctx.pop()
+    if ctx.val is EL:
+        return ctx.cont
+    return k_leval
+
+
+@spcl("define")
+def op_define(ctx):
+    sym, value = ctx.unpack(2)
+    ctx.push(symcheck(sym))
+    ctx.push_ce()
+    ctx.cont = k_op_define
+    ctx.exp = value
+    return k_leval
+
+
+def k_op_define(ctx):
+    ctx.pop_ce()
+    ctx.env.set(ctx.pop(), ctx.val)
+    return ctx.go(EL)
+
+
+@spcl("if")
+def op_if(ctx):
+    ctx.exp, c, a = ctx.unpack(3)
+    ctx.push_ce()
+    ctx.push([c, a])
+    ctx.cont = k_op_if
+    return k_leval
+
+
+def k_op_if(ctx):
+    c, a = ctx.pop()
+    ctx.pop_ce()
+    ctx.exp = a if ctx.val is EL else c
+    return k_leval
+
+
+@spcl("lambda")
+def op_lambda(ctx):
+    params, body = ctx.unpack(2)
+    return ctx.go(Lambda(params, body, ctx.env))
+
+
+@spcl("quote")
+def op_quote(ctx):
+    ctx.val = ctx.unpack(1)
+    return ctx.cont
+
+
+@spcl("set!")
+def op_setbang(ctx):
+    sym, value = ctx.unpack(2)
+    ctx.push(symcheck(sym))
+    ctx.push_ce()
+    ctx.cont = k_op_setbang
+    ctx.exp = value
+    return k_leval
+
+
+def k_op_setbang(ctx):
+    ctx.pop_ce()
+    sym = ctx.pop()
+    ctx.env.setbang(sym, ctx.val)
+    return ctx.go(EL)
+
+
+@spcl("special")
+def op_special(ctx):
+    sym, value = ctx.unpack(2)
+    ctx.push(symcheck(sym))
+    ctx.push_ce()
+    ctx.cont = k_op_special
+    ctx.exp = value
+    return k_leval
+
+
+def k_op_special(ctx):
+    ctx.pop_ce()
+    sym = ctx.pop()
+    if not isinstance(ctx.val, Lambda):
+        raise TypeError(f"expected lambda, got {ctx.val!r}")
+    ctx.val.special = True
+    ctx.env.set(sym, ctx.val)
+    return ctx.go(EL)
+
+
+@spcl("trap")
+def op_trap(ctx):
+    x = ctx.unpack(1)
+    ok = T
+    ctx.push_ce()
+    try:
+        res = ctx.leval(x, ctx.env)
+    except:  ## pylint: disable=bare-except
+        ok = EL
+        t, v = sys.exc_info()[:2]
+        res = f"{t.__name__}: {str(v)}"
+    ctx.pop_ce()
+    return ctx.go([ok, [res, EL]])
 
 
 ## }}}
