@@ -919,12 +919,12 @@ class Environment:
                     raise SyntaxError("extra junk after '&'")
                 t[p] = args
                 return
+            elif isinstance(args, list):
+                t[p], args = args
             elif args is EL:
                 raise SyntaxError("not enough args")
-            elif not isinstance(args, list):
+            else:  ## args is not a list
                 raise TypeError(f"expected arg list, got {args!r}")
-            else:
-                t[p], args = args
         if variadic:
             raise SyntaxError("params ends with '&'")
         if args is not EL:
@@ -962,7 +962,7 @@ class Environment:
 ## {{{ decorators
 
 
-GLOBALS = { "#t": T }
+GLOBALS = {"#t": T}
 
 
 def glbl(name):
@@ -1043,7 +1043,7 @@ class Continuation:
         self.s = ctx.save()
 
     def __call__(self, ctx):
-        (x,) = ctx.unpack(1)
+        x = ctx.unpack1()
         ctx.restore(self.s)
         ctx.val = x
         return self.c
@@ -1056,13 +1056,15 @@ class Continuation:
 class Lambda:
     ## pylint: disable=too-few-public-methods
 
-    __slots__ = ("p", "b", "e", "special", "ffi")
+    ffi = False
+
+    __slots__ = ("p", "b", "e", "special")
 
     def __init__(self, params, body, env):
         self.p = params
         self.b = body
         self.e = env
-        self.special = self.ffi = False
+        self.special = False
 
     def __call__(self, ctx):
         p = ctx.env if self.special else self.e
@@ -1099,6 +1101,17 @@ class Lambda:
 
 class Context:
     ## pylint: disable=too-many-instance-attributes,too-many-public-methods
+
+    __slots__ = (
+        "s",
+        "argl",
+        "cont",
+        "env",
+        "exp",
+        "val",
+        "symbol",
+        "g",
+    )
 
     def __init__(self):
         ## registers
@@ -1195,7 +1208,7 @@ class Context:
     def trampoline(self, func):
         try:
             while True:
-                func = func(self) or self.cont
+                func = func(self)
         except self.Land:
             return self.val
 
@@ -1222,15 +1235,61 @@ class Context:
             raise SyntaxError("too many args")
         return ret
 
+    def unpack1(self):
+        args = self.argl
+        if args is EL:
+            raise SyntaxError("need one arg")
+        if not isinstance(args, list):
+            raise TypeError(f"expected list, got {args!r}")
+        ret, args = args
+        if args is not EL:
+            raise SyntaxError("too many args")
+        return ret
+
+    def unpack2(self):
+        args = self.argl
+        if args is EL:
+            raise SyntaxError("need two args")
+        if not isinstance(args, list):
+            raise TypeError(f"expected list, got {args!r}")
+        x, args = args
+        if args is EL:
+            raise SyntaxError("not enough args")
+        if not isinstance(args, list):
+            raise TypeError(f"expected list, got {args!r}")
+        y, args = args
+        if args is not EL:
+            raise SyntaxError("too many args")
+        return x, y
+
+    def unpack3(self):
+        args = self.argl
+        if args is EL:
+            raise SyntaxError("need three args")
+        if not isinstance(args, list):
+            raise TypeError(f"expected list, got {args!r}")
+        x, args = args
+        if args is EL:
+            raise SyntaxError("not enough args")
+        if not isinstance(args, list):
+            raise TypeError(f"expected list, got {args!r}")
+        y, args = args
+        if args is EL:
+            raise SyntaxError("not enough args")
+        if not isinstance(args, list):
+            raise TypeError(f"expected list, got {args!r}")
+        z, args = args
+        if args is not EL:
+            raise SyntaxError("too many args")
+        return x, y, z
+
     ## }}}
     ## {{{ high level parsing routines
-
 
     def parse(self, text, callback):
         p = self.parser(callback)
         p.feed(text)
         p.feed(None)
-
 
     def execute(self, text):
         results = []
@@ -1240,7 +1299,6 @@ class Context:
 
         self.parse(text, callback)
         return results
-
 
     def load(self, filename, callback=None):
         if os.path.isabs(filename):
@@ -1258,10 +1316,8 @@ class Context:
             else:
                 self.execute(fp.read())
 
-
     ## }}}
     ## {{{ repl and main
-
 
     def repl(self, callback):
         try:
@@ -1293,7 +1349,6 @@ class Context:
             feed(line)
         print("\nbye")
         return rc
-
 
     def main(self, force_repl=False):
         try:
@@ -1501,7 +1556,6 @@ class Parser:
             "`": ctx.symbol("quasiquote"),
         }
 
-
     def process_token(self, ttype, token):
         s = self.scanner
         if ttype == s.T_SYM:
@@ -1614,6 +1668,8 @@ def k_leval(ctx):
 
     if t is list:
         op, args = x
+        if not (isinstance(args, list) or args is EL):
+            raise SyntaxError(f"expected arg list, got {args!r}")
         if isinstance(op, Symbol):
             ## inline env.get
             e = ctx.env
@@ -1655,7 +1711,7 @@ def k_leval_proc_done(ctx):
     if not callable(proc):
         raise TypeError(f"expected callable, got {proc!r}")
     ## pop argl and env
-    ctx.argl, s = ctx.s
+    ctx.argl, s = ctx.s  ## NB argl is EL or a pair
     ctx.env, s = s
 
     if ctx.argl is EL:
@@ -1674,6 +1730,8 @@ def k_leval_proc_done(ctx):
     ctx.exp, args = ctx.argl
     if args is EL:
         ctx.cont = k_leval_last
+    elif not isinstance(args, list):
+        raise TypeError(f"expected arg list, got {args!r}")
     else:
         s = [args, s]
         ctx.cont = k_leval_next
@@ -1683,7 +1741,7 @@ def k_leval_proc_done(ctx):
 
 def k_leval_next(ctx):
     ## pop args and r.env
-    args, s = ctx.s
+    args, s = ctx.s  ## NB args is a pair
     ctx.env, s = s
     ## push val and r.env
     s = [ctx.env, [ctx.val, s]]
@@ -1691,6 +1749,8 @@ def k_leval_next(ctx):
     ctx.exp, args = args
     if args is EL:
         ctx.cont = k_leval_last
+    elif not isinstance(args, list):
+        raise TypeError(f"expected arg list, got {args!r}")
     else:
         ## push args
         s = [args, s]
@@ -1825,7 +1885,7 @@ def op_cond(ctx):
 def k_op_cond_setup(ctx, args):
     pc, args = args
     ctx.argl = pc
-    ctx.exp, c = ctx.unpack(2)
+    ctx.exp, c = ctx.unpack2()
     ctx.push(c)
     ctx.push(ctx.env)
     if args is EL:
@@ -1857,7 +1917,7 @@ def k_op_cond_last(ctx):
 
 @spcl("define")
 def op_define(ctx):
-    sym, value = ctx.unpack(2)
+    sym, value = ctx.unpack2()
     ctx.push(symcheck(sym))
     ctx.push_ce()
     ctx.cont = k_op_define
@@ -1873,7 +1933,7 @@ def k_op_define(ctx):
 
 @spcl("if")
 def op_if(ctx):
-    ctx.exp, c, a = ctx.unpack(3)
+    ctx.exp, c, a = ctx.unpack3()
     ctx.push_ce()
     ctx.push([c, a])
     ctx.cont = k_op_if
@@ -1889,19 +1949,19 @@ def k_op_if(ctx):
 
 @spcl("lambda")
 def op_lambda(ctx):
-    params, body = ctx.unpack(2)
+    params, body = ctx.unpack2()
     return ctx.go(Lambda(params, body, ctx.env))
 
 
 @spcl("quote")
 def op_quote(ctx):
-    (ctx.val,) = ctx.unpack(1)
+    ctx.val = ctx.unpack1()
     return ctx.cont
 
 
 @spcl("set!")
 def op_setbang(ctx):
-    sym, value = ctx.unpack(2)
+    sym, value = ctx.unpack2()
     ctx.push(symcheck(sym))
     ctx.push_ce()
     ctx.cont = k_op_setbang
@@ -1918,7 +1978,7 @@ def k_op_setbang(ctx):
 
 @spcl("special")
 def op_special(ctx):
-    sym, value = ctx.unpack(2)
+    sym, value = ctx.unpack2()
     ctx.push(symcheck(sym))
     ctx.push_ce()
     ctx.cont = k_op_special
@@ -1938,7 +1998,7 @@ def k_op_special(ctx):
 
 @spcl("trap")
 def op_trap(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     ok = T
     ctx.push_ce()
     try:
@@ -1956,20 +2016,20 @@ def op_trap(ctx):
 
 
 def unary(ctx, f):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     ctx.val = f(x)
     return ctx.cont
 
 
 def binary(ctx, f):
-    x, y = ctx.unpack(2)
+    x, y = ctx.unpack2()
     ctx.val = f(x, y)
     return ctx.cont
 
 
 @glbl("apply")
 def op_apply(ctx):
-    proc, args = ctx.unpack(2)
+    proc, args = ctx.unpack2()
     if not callable(proc):
         raise TypeError(f"expected callable, got {proc!r}")
     ctx.argl = args
@@ -1987,7 +2047,7 @@ def op_atom(ctx):
 @glbl("call/cc")
 @glbl("call-with-current-contination")
 def op_callcc(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
     ctx.argl = [ctx.continuation(ctx.cont), EL]
@@ -2014,7 +2074,7 @@ def op_cdr(ctx):
 
 @glbl("cons")
 def op_cons(ctx):
-    ctx.val = list(ctx.unpack(2))
+    ctx.val = list(ctx.unpack2())
     return ctx.cont
 
 
@@ -2059,7 +2119,7 @@ def op_equal(ctx):
 
 @glbl("error")
 def op_error(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     raise LispError(x)
 
 
@@ -2092,7 +2152,7 @@ def op_eval(ctx):
 
 @glbl("exit")
 def op_exit(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     if isinstance(x, int):
         raise SystemExit(x)
     ctx.exp = x
@@ -2106,7 +2166,7 @@ def k_op_exit(ctx):
 
 @glbl("last")
 def op_last(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     ret = EL
     while x is not EL:
         ret, x = x
@@ -2146,7 +2206,7 @@ def op_nand(ctx):
 
 @glbl("null?")
 def op_null(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     ctx.val = T if x is EL else EL
     return ctx.cont
 
@@ -2244,7 +2304,7 @@ def op_type(ctx):
 
 @glbl("while")
 def op_while(ctx):
-    (x,) = ctx.unpack(1)
+    x = ctx.unpack1()
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
 
@@ -2324,8 +2384,12 @@ def op_ffi_time(args):
 ## }}}
 
 
-if __name__ == "__main__":
+def main():
     Context().main()
+
+
+if __name__ == "__main__":
+    main()
 
 
 ## EOF
