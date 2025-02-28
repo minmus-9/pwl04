@@ -1181,3 +1181,328 @@ def op_trap(ctx):
 
 
 ## }}}
+## {{{ primitives
+
+
+def unary(ctx, f):
+    (x,) = ctx.unpack(1)
+    ctx.val = f(x)
+    return ctx.cont
+
+
+def binary(ctx, f):
+    x, y = ctx.unpack(2)
+    ctx.val = f(x, y)
+    return ctx.cont
+
+
+@glbl("apply")
+def op_apply(ctx):
+    proc, args = ctx.unpack(2)
+    if not callable(proc):
+        raise TypeError(f"expected callable, got {proc!r}")
+    ctx.argl = args
+    return proc
+
+
+@glbl("atom?")
+def op_atom(ctx):
+    def f(x):
+        return T if is_atom(x) else EL
+
+    return unary(ctx, f)
+
+
+@glbl("call/cc")
+@glbl("call-with-current-contination")
+def op_callcc(ctx):
+    x = ctx.unpack(1)
+    if not callable(x):
+        raise TypeError(f"expected callable, got {x!r}")
+    ctx.argl = [ctx.continuation(ctx.cont), EL]
+    return x
+
+
+@glbl("car")
+def op_car(ctx):
+    def f(x):
+        return listcheck(x)[0]
+
+    return unary(ctx, f)
+
+
+@glbl("cdr")
+def op_cdr(ctx):
+    def f(x):
+        if x is EL:
+            return x
+        return listcheck(x)[1]
+
+    return unary(ctx, f)
+
+
+@glbl("cons")
+def op_cons(ctx):
+    ctx.val = list(ctx.unpack(2))
+    return ctx.cont
+
+
+@glbl("div")
+def op_div(ctx):
+    def f(x, y):
+        if isinstance(x, int) and isinstance(y, int):
+            return x // y
+        return x / y
+
+    return binary(ctx, f)
+
+
+@glbl("do")
+def op_do(ctx):
+    x = ctx.argl
+    ctx.val = EL
+    while x is not EL:
+        if not isinstance(x, list):
+            raise SyntaxError(f"expected list, got {x!r}")
+        ctx.val, x = x
+    return ctx.cont
+
+
+@glbl("eq?")
+def op_eq(ctx):
+    def f(x, y):
+        return T if eq(x, y) else EL
+
+    return binary(ctx, f)
+
+
+@glbl("equal?")
+def op_equal(ctx):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} {y!r}")
+        return T if x == y else EL
+
+    return binary(ctx, f)
+
+
+@glbl("error")
+def op_error(ctx):
+    x = ctx.unpack(1)
+    raise LispError(x)
+
+
+@glbl("eval")
+def op_eval(ctx):
+    args = ctx.argl
+    if args is EL:
+        raise TypeError("need at least one arg")
+    x, args = args
+    if args is EL:
+        n_up = 0
+    else:
+        n_up, args = args
+        if args is not EL:
+            raise TypeError("too many args")
+
+    if isinstance(x, str):
+        l = []
+        ctx.parse(x, l.append)
+        x = l[-1] if l else EL
+    e = ctx.env
+    for _ in range(n_up):
+        e = e.up()
+        if e is SENTINEL:
+            raise ValueError(f"cannot go up {n_up} levels")
+    ctx.exp = x
+    ctx.env = e
+    return k_leval
+
+
+@glbl("exit")
+def op_exit(ctx):
+    x = ctx.unpack(1)
+    if isinstance(x, int):
+        raise SystemExit(x)
+    ctx.exp = x
+    ctx.cont = k_op_exit
+    return k_stringify
+
+
+def k_op_exit(ctx):
+    raise SystemExit(ctx.val)
+
+
+@glbl("last")
+def op_last(ctx):
+    x = ctx.unpack(1)
+    ret = EL
+    while x is not EL:
+        ret, x = x
+    ctx.val = ret
+    return ctx.cont
+
+
+@glbl("lt?")
+def op_lt(ctx):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} and {y!r}")
+        return T if x < y else EL
+
+    return binary(ctx, f)
+
+
+@glbl("mul")
+def op_mul(ctx):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} and {y!r}")
+        return x * y
+
+    return binary(ctx, f)
+
+
+@glbl("nand")
+def op_nand(ctx):
+    def f(x, y):
+        if not (isinstance(x, int) and isinstance(y, int)):
+            raise TypeError(f"expected integers, got {x!r} and {y!r}")
+        return ~(x & y)
+
+    return binary(ctx, f)
+
+
+@glbl("null?")
+def op_null(ctx):
+    x = ctx.unpack(1)
+    ctx.val = T if x is EL else EL
+    return ctx.cont
+
+
+@glbl("print")
+def op_print(ctx):
+    args = ctx.argl
+
+    if args is EL:
+        print()
+        ctx.val = EL
+        return ctx.cont
+
+    arg, args = args
+
+    ctx.push(ctx.cont)
+    ctx.push(args)
+    ctx.exp = arg
+    ctx.cont = k_op_print
+    return k_stringify
+
+
+def k_op_print(ctx):
+    args = ctx.pop()
+
+    if args is EL:
+        print(ctx.val)
+        ctx.val = EL
+        return ctx.pop()
+
+    print(ctx.val, end=" ")
+
+    arg, args = args
+
+    ctx.push(args)
+    ctx.exp = arg
+    ctx.cont = k_op_print
+    return k_stringify
+
+
+@glbl("set-car!")
+def op_setcarbang(ctx):
+    def f(x, y):
+        listcheck(x)[0] = y
+
+    return binary(ctx, f)
+
+
+@glbl("set-cdr!")
+def op_setcdrbang(ctx):
+    def f(x, y):
+        listcheck(x)[1] = y
+
+    return binary(ctx, f)
+
+
+@glbl("sub")
+def op_sub(ctx):
+    def f(x, y):
+        if not (isinstance(x, (int, float)) and isinstance(y, (int, float))):
+            raise TypeError(f"expected numbers, got {x!r} and {y!r}")
+        return x - y
+
+    return binary(ctx, f)
+
+
+@glbl("type")
+def op_type(ctx):
+    def f(x):
+        ## pylint: disable=too-many-return-statements
+        if x is EL:
+            return ctx.symbol("()")
+        if x is T:
+            return ctx.symbol("#t")
+        if isinstance(x, list):
+            return ctx.symbol("pair")
+        if isinstance(x, Symbol):
+            return ctx.symbol("symbol")
+        if isinstance(x, int):
+            return ctx.symbol("integer")
+        if isinstance(x, float):
+            return ctx.symbol("float")
+        if isinstance(x, str):
+            return ctx.symbol("string")
+        if isinstance(x, Lambda):
+            return ctx.symbol("lambda")
+        if isinstance(x, Continuation):
+            return ctx.symbol("continuation")
+        if callable(x):
+            return ctx.symbol("primitive")
+        return ctx.symbol("opaque")
+
+    return unary(ctx, f)
+
+
+@glbl("while")
+def op_while(ctx):
+    x = ctx.unpack(1)
+    if not callable(x):
+        raise TypeError(f"expected callable, got {x!r}")
+
+    ctx.push(ctx.cont)
+    ctx.push(x)
+    ctx.push(ctx.env)
+    ctx.exp = x
+    ctx.cont = k_op_while
+    return k_leval
+
+
+def k_op_while(ctx):
+    ctx.env = ctx.pop()
+    x = ctx.top()
+
+    if ctx.val is EL:
+        ctx.pop()  ## x
+        return ctx.pop()
+    ctx.push(ctx.env)
+    ctx.exp = x
+    ctx.cont = k_op_while
+    return k_leval
+
+
+## }}}
+
+
+if __name__ == "__main__":
+    Context().main()
+
+
+## EOF
