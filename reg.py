@@ -1450,6 +1450,8 @@ def op_do():
     x = r.argl
     r.val = EL
     while x is not EL:
+        if not isinstance(x, list):
+            raise TypeError(f"expected list, got {x!r}")
         r.val, x = x
     return r.cont
 

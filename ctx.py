@@ -1034,11 +1034,13 @@ class Queue:
 class Continuation:
     ## pylint: disable=too-few-public-methods
 
+    special = ffi = False
+
     __slots__ = ("c", "s")
 
-    def __init__(self, state, cont):
+    def __init__(self, ctx, cont):
         self.c = cont
-        self.s = state
+        self.s = ctx.save()
 
     def __call__(self, ctx):
         ctx.restore(self.s)
@@ -1065,6 +1067,29 @@ class Lambda:
         ctx.env = ctx.environment(self.p, ctx.argl, p)
         ctx.exp = self.b
         return k_leval
+
+    ###
+
+    def k_lambda_body_done(self, ctx):
+        ## pylint: disable=no-self-use
+        bodystr = ctx.val
+        paramstr = ctx.pop()
+        print("BP", bodystr, paramstr)
+        ctx.val = "(lambda " + paramstr + " " + bodystr + ")"
+        return ctx.pop()
+
+    def k_lambda_params_done(self, ctx):
+        ctx.cont = self.k_lambda_body_done
+        ctx.exp = ctx.pop()
+        ctx.push(ctx.val)
+        return k_stringify
+
+    def k_stringify(self, ctx):
+        ctx.push(ctx.cont)
+        ctx.push(self.b)
+        ctx.cont = self.k_lambda_params_done
+        ctx.exp = self.p
+        return k_stringify
 
 
 ## }}}
@@ -1116,7 +1141,7 @@ class Context:
     ## {{{ factories
 
     def continuation(self, cont):
-        return Continuation(self.save(), cont)
+        return Continuation(self, cont)
 
     def environment(self, params, args, parent):
         return Environment(self, params, args, parent)
@@ -1158,7 +1183,7 @@ class Context:
         self.s = [x, self.s]
 
     def push_ce(self):
-        self.s = [self.cont, [self.env, self.s]]
+        self.s = [self.env, [self.cont, self.s]]
 
     def top(self):
         return self.s[0]
@@ -1551,7 +1576,7 @@ def k_stringify(ctx):
     if isinstance(x, (Symbol, int, float, str)):
         return ctx.go(str(x))
     if isinstance(x, Lambda):
-        return x.stringify_
+        return x.k_stringify
     if isinstance(x, Continuation):
         return ctx.go("[continuation]")
     if callable(x):
@@ -1869,7 +1894,7 @@ def op_lambda(ctx):
 
 @spcl("quote")
 def op_quote(ctx):
-    ctx.val = ctx.unpack(1)
+    (ctx.val,) = ctx.unpack(1)
     return ctx.cont
 
 
@@ -1912,7 +1937,7 @@ def k_op_special(ctx):
 
 @spcl("trap")
 def op_trap(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     ok = T
     ctx.push_ce()
     try:
@@ -1961,10 +1986,11 @@ def op_atom(ctx):
 @glbl("call/cc")
 @glbl("call-with-current-contination")
 def op_callcc(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
     ctx.argl = [ctx.continuation(ctx.cont), EL]
+    print("CC", ctx.stringify(x), ctx.argl)
     return x
 
 
@@ -2033,7 +2059,7 @@ def op_equal(ctx):
 
 @glbl("error")
 def op_error(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     raise LispError(x)
 
 
@@ -2056,7 +2082,7 @@ def op_eval(ctx):
         x = l[-1] if l else EL
     e = ctx.env
     for _ in range(n_up):
-        e = e.up()
+        e = e.p
         if e is SENTINEL:
             raise ValueError(f"cannot go up {n_up} levels")
     ctx.exp = x
@@ -2066,7 +2092,7 @@ def op_eval(ctx):
 
 @glbl("exit")
 def op_exit(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     if isinstance(x, int):
         raise SystemExit(x)
     ctx.exp = x
@@ -2080,7 +2106,7 @@ def k_op_exit(ctx):
 
 @glbl("last")
 def op_last(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     ret = EL
     while x is not EL:
         ret, x = x
@@ -2120,7 +2146,7 @@ def op_nand(ctx):
 
 @glbl("null?")
 def op_null(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     ctx.val = T if x is EL else EL
     return ctx.cont
 
@@ -2218,7 +2244,7 @@ def op_type(ctx):
 
 @glbl("while")
 def op_while(ctx):
-    x = ctx.unpack(1)
+    (x,) = ctx.unpack(1)
     if not callable(x):
         raise TypeError(f"expected callable, got {x!r}")
 
